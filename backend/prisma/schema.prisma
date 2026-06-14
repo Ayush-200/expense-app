@@ -17,6 +17,8 @@ model User {
 
   createdGroups     Group[]           @relation("GroupCreator")
   groupMemberships  GroupMember[]
+  paidExpenses      Expense[]         @relation("ExpensePaidBy")
+  expenseShares     ExpenseParticipant[] @relation("ExpenseParticipant")
 
   @@map("users")
 }
@@ -31,6 +33,7 @@ model Group {
   updatedAt   DateTime  @updatedAt
 
   members     GroupMember[]
+  expenses    Expense[]
 
   @@map("groups")
 }
@@ -47,4 +50,43 @@ model GroupMember {
 
   @@unique([groupId, userId])
   @@map("group_members")
+}
+
+// Split types: EQUAL | EXACT | PERCENTAGE | SHARE
+// Stored as string so new types can be added without schema migration
+model Expense {
+  id           String    @id @default(cuid())
+  groupId      String
+  paidById     String
+  description  String
+  totalAmount  Decimal   @db.Decimal(10, 2)
+  splitType    String    // "EQUAL" | "EXACT" | "PERCENTAGE" | "SHARE"
+  date         DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  group        Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  paidBy       User      @relation("ExpensePaidBy", fields: [paidById], references: [id])
+  participants ExpenseParticipant[]
+
+  @@map("expenses")
+}
+
+model ExpenseParticipant {
+  id            String   @id @default(cuid())
+  expenseId     String
+  // Nullable: if null this is a guest participant
+  userId        String?
+  // Guest participant fields (used when userId is null)
+  guestName     String?
+  guestEmail    String?
+  // The final calculated amount this participant owes
+  amountOwed    Decimal  @db.Decimal(10, 2)
+  // Raw input stored for display & recalculation (percentage, shares, exact)
+  splitMetadata Json?
+
+  expense       Expense  @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  user          User?    @relation("ExpenseParticipant", fields: [userId], references: [id])
+
+  @@map("expense_participants")
 }

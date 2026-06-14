@@ -156,11 +156,19 @@ export function GroupDetail() {
               Created by {group.createdBy.name}
             </p>
           </div>
-          {!isCreator && (
-            <Button variant="danger" onClick={handleLeaveGroup}>
-              Leave Group
-            </Button>
-          )}
+          <div className="flex gap-2">
+            <Link to={`/expenses?groupId=${group.id}`}>
+              <Button variant="primary">View Expenses</Button>
+            </Link>
+            <Link to={`/balances?groupId=${group.id}`}>
+              <Button variant="secondary">Balances</Button>
+            </Link>
+            {!isCreator && (
+              <Button variant="danger" onClick={handleLeaveGroup}>
+                Leave Group
+              </Button>
+            )}
+          </div>
         </div>
       </Card>
 

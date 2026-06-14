@@ -37,6 +37,10 @@ expense-app/
 ✅ Error handling  
 ✅ CORS configuration  
 ✅ Seed data for 6 users  
+✅ Group management (create, members, history)  
+✅ Expense tracking with 4 split types  
+✅ Guest participant support  
+✅ Edit and delete expenses  
 
 ## Quick Start
 
@@ -111,34 +115,16 @@ Open `http://localhost:5173` in your browser.
 http://localhost:5000/api
 ```
 
-### Endpoints
-
-**Health Check**
-```
-GET /health
-```
+### Auth Endpoints
 
 **Register User**
 ```
 POST /auth/register
-Content-Type: application/json
-
-{
-  "name": "John Doe",
-  "email": "john@example.com",
-  "password": "password123"
-}
 ```
 
 **Login**
 ```
 POST /auth/login
-Content-Type: application/json
-
-{
-  "email": "john@example.com",
-  "password": "password123"
-}
 ```
 
 **Get Profile** (Protected)
@@ -146,6 +132,79 @@ Content-Type: application/json
 GET /auth/profile
 Authorization: Bearer <jwt-token>
 ```
+
+### Group Endpoints
+
+**Create Group**
+```
+POST /groups
+```
+
+**Get User's Groups**
+```
+GET /groups
+```
+
+**Get Group Detail**
+```
+GET /groups/:id
+```
+
+**Add Member**
+```
+POST /groups/:id/members
+```
+
+**Remove Member**
+```
+DELETE /groups/:id/members/:memberId
+```
+
+**Leave Group**
+```
+POST /groups/:id/leave
+```
+
+**Membership History**
+```
+GET /groups/:id/history
+```
+
+### Expense Endpoints
+
+**Create Expense**
+```
+POST /expenses
+{
+  "groupId": "...",
+  "description": "Dinner",
+  "totalAmount": 1500,
+  "splitType": "EQUAL",
+  "participants": [...]
+}
+```
+
+**Get Group Expenses**
+```
+GET /expenses?groupId=...
+```
+
+**Get Expense Detail**
+```
+GET /expenses/:id
+```
+
+**Update Expense** (only payer)
+```
+PUT /expenses/:id
+```
+
+**Delete Expense** (only payer)
+```
+DELETE /expenses/:id
+```
+
+See [EXPENSE_FEATURES.md](./EXPENSE_FEATURES.md) for detailed expense API documentation.
 
 ## Environment Variables
 
@@ -166,6 +225,7 @@ VITE_API_URL=http://localhost:5000/api
 
 ## Database Schema
 
+### User
 ```prisma
 model User {
   id            String    @id @default(cuid())
@@ -174,6 +234,49 @@ model User {
   password      String
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+}
+```
+
+### Group & GroupMember
+```prisma
+model Group {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model GroupMember {
+  id        String    @id @default(cuid())
+  groupId   String
+  userId    String
+  joinedAt  DateTime  @default(now())
+  leftAt    DateTime? # Soft delete for history
+}
+```
+
+### Expense & ExpenseParticipant
+```prisma
+model Expense {
+  id           String    @id @default(cuid())
+  groupId      String
+  paidById     String
+  description  String
+  totalAmount  Decimal   @db.Decimal(10, 2)
+  splitType    String    # EQUAL | EXACT | PERCENTAGE | SHARE
+  date         DateTime  @default(now())
+}
+
+model ExpenseParticipant {
+  id            String   @id @default(cuid())
+  expenseId     String
+  userId        String?  # Nullable for guest participants
+  guestName     String?
+  guestEmail    String?
+  amountOwed    Decimal  @db.Decimal(10, 2)
+  splitMetadata Json?    # Raw split data (%, shares, etc.)
 }
 ```
 
@@ -245,14 +348,12 @@ frontend-app/
 
 ## Next Features to Implement
 
-- Groups management
-- Expense tracking
-- Split calculations
-- Expense history
-- Settlement tracking
-- User profiles
-- Friends management
+- Settlement calculations (who owes whom)
+- Expense categories/tags
+- Receipt uploads
 - Notifications
+- Multi-currency support
+- Export to CSV/PDF
 
 ## Tech Stack Summary
 

@@ -44,11 +44,55 @@ export interface GroupMember {
   user: User;
 }
 
+export interface AddMemberData {
+  userId: string;
+}
+
 export interface CreateGroupData {
   name: string;
   description?: string;
 }
 
-export interface AddMemberData {
-  userId: string;
+export interface ExpenseParticipant {
+  id: string;
+  expenseId: string;
+  userId?: string;
+  guestName?: string;
+  guestEmail?: string;
+  amountOwed: string;
+  splitMetadata?: Record<string, unknown>;
+  user?: User;
+}
+
+export interface Expense {
+  id: string;
+  groupId: string;
+  group: { id: string; name: string };
+  paidById: string;
+  paidBy: User;
+  description: string;
+  totalAmount: string;
+  splitType: SplitType;
+  date: string;
+  createdAt: string;
+  updatedAt: string;
+  participants: ExpenseParticipant[];
+}
+
+export interface ParticipantInput {
+  userId?: string;
+  guestName?: string;
+  guestEmail?: string;
+  exactAmount?: number;
+  percentage?: number;
+  shares?: number;
+}
+
+export interface CreateExpenseData {
+  groupId: string;
+  description: string;
+  totalAmount: number;
+  splitType: SplitType;
+  date?: string;
+  participants: ParticipantInput[];
 }
