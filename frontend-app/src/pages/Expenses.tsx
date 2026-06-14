@@ -8,6 +8,7 @@ import { Layout } from '../components/Layout';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { ExpenseForm } from '../components/ExpenseForm';
+import { ImportExpensesModal } from '../components/ImportExpensesModal';
 import { CreateExpenseData } from '../types';
 
 const SPLIT_LABELS: Record<string, string> = {
@@ -27,6 +28,7 @@ export function Expenses() {
   const [group, setGroup] = useState<Group | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -93,6 +95,17 @@ export function Expenses() {
 
   return (
     <Layout>
+      {showImport && (
+        <ImportExpensesModal
+          groupId={groupId}
+          onClose={() => setShowImport(false)}
+          onSuccess={() => {
+            setShowImport(false);
+            loadAll();
+          }}
+        />
+      )}
+
       <div className="space-y-6">
         <div className="flex justify-between items-center">
           <div>
@@ -102,6 +115,12 @@ export function Expenses() {
             <h2 className="text-2xl font-bold text-white mt-1">Expenses</h2>
           </div>
           <div className="flex gap-2">
+            <button
+              onClick={() => setShowImport(true)}
+              className="px-3 py-2 text-sm text-gray-300 hover:text-white border border-gray-600 rounded-lg hover:border-gray-500"
+            >
+              📥 Import CSV
+            </button>
             <Link to={`/balances?groupId=${groupId}`}>
               <Button variant="secondary">Balances</Button>
             </Link>
