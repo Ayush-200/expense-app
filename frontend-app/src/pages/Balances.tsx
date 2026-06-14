@@ -1,11 +1,114 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { settlementService, BalanceEntry, Settlement } from '../services/settlement.service';
+import {
+  settlementService,
+  BalanceEntry,
+  Settlement,
+  ExpenseContribution,
+} from '../services/settlement.service';
 import { groupService } from '../services/group.service';
 import { useAuth } from '../context/AuthContext';
 import { Group } from '../types';
 import { Layout } from '../components/Layout';
 import { Card } from '../components/Card';
+
+// ── helpers ────────────────────────────────────────────────────────────────────
+
+function fmt(n: number) {
+  return `₹${Math.abs(n).toFixed(2)}`;
+}
+
+// ── Expense breakdown modal (Rohan's requirement) ──────────────────────────────
+
+function ContributionBreakdown({
+  entry,
+  onClose,
+}: {
+  entry: BalanceEntry;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-lg max-h-[80vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="sticky top-0 bg-gray-900 border-b border-gray-700 px-5 py-4 flex justify-between items-center">
+          <div>
+            <p className="text-white font-semibold">{entry.name}</p>
+            <p className="text-gray-400 text-sm">Expense breakdown</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-white text-xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="p-5 space-y-3">
+          {entry.contributions.length === 0 ? (
+            <p className="text-gray-500 text-sm">No expenses found.</p>
+          ) : (
+            entry.contributions.map((c: ExpenseContribution) => (
+              <div
+                key={c.expenseId}
+                className="bg-gray-800 border border-gray-700 rounded-lg p-3"
+              >
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-white text-sm font-medium">{c.description}</p>
+                    <p className="text-gray-500 text-xs mt-0.5">
+                      {new Date(c.date).toLocaleDateString()} ·{' '}
+                      <span className="uppercase">{c.splitType}</span> split ·{' '}
+                      total {fmt(c.totalAmount)}
+                    </p>
+                  </div>
+                  <span
+                    className={`text-sm font-bold ml-2 ${
+                      c.net > 0
+                        ? 'text-green-400'
+                        : c.net < 0
+                        ? 'text-red-400'
+                        : 'text-gray-400'
+                    }`}
+                  >
+                    {c.net > 0 ? '+' : ''}{c.net.toFixed(2)}
+                  </span>
+                </div>
+                <div className="mt-2 flex gap-4 text-xs text-gray-400">
+                  {c.paidAmount > 0 && <span>Paid {fmt(c.paidAmount)}</span>}
+                  {c.owedAmount > 0 && <span>Share {fmt(c.owedAmount)}</span>}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Summary row */}
+        <div className="sticky bottom-0 bg-gray-900 border-t border-gray-700 px-5 py-3 flex justify-between text-sm">
+          <span className="text-gray-400">Net balance</span>
+          <span
+            className={`font-bold ${
+              entry.net > 0
+                ? 'text-green-400'
+                : entry.net < 0
+                ? 'text-red-400'
+                : 'text-gray-400'
+            }`}
+          >
+            {entry.net >= 0 ? '+' : ''}{entry.net.toFixed(2)}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main page ──────────────────────────────────────────────────────────────────
 
 export function Balances() {
   const [searchParams] = useSearchParams();
@@ -18,6 +121,7 @@ export function Balances() {
   const [group, setGroup] = useState<Group | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [breakdown, setBreakdown] = useState<BalanceEntry | null>(null);
 
   useEffect(() => {
     if (!groupId) return;
@@ -25,6 +129,8 @@ export function Balances() {
   }, [groupId]);
 
   const loadAll = async () => {
+    setIsLoading(true);
+    setError('');
     try {
       const [balData, grpData] = await Promise.all([
         settlementService.getGroupBalances(groupId),
@@ -62,12 +168,15 @@ export function Balances() {
     );
   }
 
-  // Split balances into owed-to-me, i-owe, settled
   const myBalance = balances.find((b) => b.userId === user?.id);
   const othersBalance = balances.filter((b) => b.userId !== user?.id);
 
   return (
     <Layout>
+      {breakdown && (
+        <ContributionBreakdown entry={breakdown} onClose={() => setBreakdown(null)} />
+      )}
+
       <div className="space-y-6">
         {/* Header */}
         <div className="flex justify-between items-center">
@@ -94,20 +203,20 @@ export function Balances() {
           </div>
         )}
 
-        {/* Summary card */}
+        {/* Summary */}
         <Card>
           <div className="grid grid-cols-3 gap-4 text-center">
             <div>
               <p className="text-gray-500 text-sm">Total Expenses</p>
-              <p className="text-white text-2xl font-bold">₹{totalExpenses.toFixed(2)}</p>
+              <p className="text-white text-2xl font-bold">{fmt(totalExpenses)}</p>
             </div>
             <div>
               <p className="text-gray-500 text-sm">You Paid</p>
-              <p className="text-white text-2xl font-bold">₹{(myBalance?.paid ?? 0).toFixed(2)}</p>
+              <p className="text-white text-2xl font-bold">{fmt(myBalance?.paid ?? 0)}</p>
             </div>
             <div>
               <p className="text-gray-500 text-sm">Your Share</p>
-              <p className="text-white text-2xl font-bold">₹{(myBalance?.owes ?? 0).toFixed(2)}</p>
+              <p className="text-white text-2xl font-bold">{fmt(myBalance?.owes ?? 0)}</p>
             </div>
           </div>
         </Card>
@@ -128,14 +237,14 @@ export function Balances() {
               <div>
                 <p className="text-white font-semibold">{myBalance.name} (You)</p>
                 <p className="text-gray-400 text-sm">
-                  Paid ₹{myBalance.paid.toFixed(2)} · Owe ₹{myBalance.owes.toFixed(2)}
+                  Paid {fmt(myBalance.paid)} · Owe {fmt(myBalance.owes)}
                 </p>
               </div>
               <div className="text-right">
                 {myBalance.net > 0 ? (
-                  <p className="text-green-400 font-bold text-xl">+₹{myBalance.net.toFixed(2)}</p>
+                  <p className="text-green-400 font-bold text-xl">+{fmt(myBalance.net)}</p>
                 ) : myBalance.net < 0 ? (
-                  <p className="text-red-400 font-bold text-xl">-₹{Math.abs(myBalance.net).toFixed(2)}</p>
+                  <p className="text-red-400 font-bold text-xl">-{fmt(myBalance.net)}</p>
                 ) : (
                   <p className="text-gray-400 font-bold text-xl">Settled up</p>
                 )}
@@ -144,6 +253,14 @@ export function Balances() {
                 </p>
               </div>
             </div>
+            {myBalance.contributions.length > 0 && (
+              <button
+                onClick={() => setBreakdown(myBalance)}
+                className="mt-3 text-xs text-primary-400 hover:text-primary-300 underline"
+              >
+                See expense breakdown ({myBalance.contributions.length} expenses) →
+              </button>
+            )}
           </Card>
         )}
 
@@ -167,14 +284,22 @@ export function Balances() {
                       )}
                     </p>
                     <p className="text-gray-500 text-xs">
-                      Paid ₹{b.paid.toFixed(2)} · Owes ₹{b.owes.toFixed(2)}
+                      Paid {fmt(b.paid)} · Owes {fmt(b.owes)}
                     </p>
+                    {b.contributions.length > 0 && (
+                      <button
+                        onClick={() => setBreakdown(b)}
+                        className="text-xs text-primary-400 hover:text-primary-300 underline mt-0.5"
+                      >
+                        Why? ({b.contributions.length} expenses)
+                      </button>
+                    )}
                   </div>
                   <div className="text-right">
                     {b.net > 0 ? (
-                      <p className="text-green-400 font-semibold">+₹{b.net.toFixed(2)}</p>
+                      <p className="text-green-400 font-semibold">+{fmt(b.net)}</p>
                     ) : b.net < 0 ? (
-                      <p className="text-red-400 font-semibold">-₹{Math.abs(b.net).toFixed(2)}</p>
+                      <p className="text-red-400 font-semibold">-{fmt(b.net)}</p>
                     ) : (
                       <p className="text-gray-400 font-semibold">₹0.00</p>
                     )}
@@ -185,73 +310,62 @@ export function Balances() {
           </Card>
         )}
 
-        {/* Settlements — minimal transactions to clear all debts */}
+        {/* Simplified settlements — Aisha's view */}
         <Card>
-          <h3 className="text-lg font-semibold text-white mb-1">Suggested Settlements</h3>
+          <h3 className="text-lg font-semibold text-white mb-1">Settlements</h3>
           <p className="text-gray-500 text-sm mb-4">
-            Minimum transactions to settle all debts
+            Minimum transactions to clear all debts
           </p>
 
           {settlements.length === 0 ? (
             <div className="text-center py-6">
-              <p className="text-green-400 font-semibold text-lg">All settled up! 🎉</p>
+              <p className="text-green-400 font-semibold text-lg">All settled up 🎉</p>
               <p className="text-gray-500 text-sm mt-1">No outstanding balances</p>
             </div>
           ) : (
             <div className="space-y-2">
               {settlements.map((s, i) => {
-                const isInvolvedAsFrom = s.fromUserId === user?.id;
-                const isInvolvedAsTo = s.toUserId === user?.id;
+                const isFrom = s.fromUserId === user?.id;
+                const isTo = s.toUserId === user?.id;
 
                 return (
                   <div
                     key={i}
                     className={`flex items-center gap-3 p-3 rounded-lg border ${
-                      isInvolvedAsFrom
+                      isFrom
                         ? 'bg-red-900/20 border-red-800'
-                        : isInvolvedAsTo
+                        : isTo
                         ? 'bg-green-900/20 border-green-800'
                         : 'bg-gray-800 border-gray-700'
                     }`}
                   >
-                    {/* From */}
+                    {/* Payer */}
                     <div className="flex-1 text-right">
-                      <p
-                        className={`font-medium ${
-                          isInvolvedAsFrom ? 'text-red-300' : 'text-white'
-                        }`}
-                      >
-                        {isInvolvedAsFrom ? 'You' : s.fromName}
+                      <p className={`font-medium ${isFrom ? 'text-red-300' : 'text-white'}`}>
+                        {isFrom ? 'You' : s.fromName}
+                        {s.fromGuestName && (
+                          <span className="ml-1 text-xs text-gray-500">(guest)</span>
+                        )}
                       </p>
                     </div>
 
                     {/* Arrow + amount */}
-                    <div className="flex flex-col items-center px-2">
-                      <span className="text-gray-500 text-xs mb-0.5">pays</span>
-                      <div className="flex items-center gap-1">
-                        <span className="text-gray-600">→</span>
-                      </div>
+                    <div className="flex flex-col items-center px-2 min-w-[80px]">
+                      <span className="text-gray-500 text-xs">pays</span>
                       <span
                         className={`font-bold text-sm ${
-                          isInvolvedAsFrom
-                            ? 'text-red-400'
-                            : isInvolvedAsTo
-                            ? 'text-green-400'
-                            : 'text-white'
+                          isFrom ? 'text-red-400' : isTo ? 'text-green-400' : 'text-white'
                         }`}
                       >
-                        ₹{s.amount.toFixed(2)}
+                        {fmt(s.amount)}
                       </span>
+                      <span className="text-gray-600 text-lg leading-none">→</span>
                     </div>
 
-                    {/* To */}
+                    {/* Receiver */}
                     <div className="flex-1">
-                      <p
-                        className={`font-medium ${
-                          isInvolvedAsTo ? 'text-green-300' : 'text-white'
-                        }`}
-                      >
-                        {isInvolvedAsTo ? 'You' : s.toName}
+                      <p className={`font-medium ${isTo ? 'text-green-300' : 'text-white'}`}>
+                        {isTo ? 'You' : s.toName}
                       </p>
                     </div>
                   </div>

@@ -1,17 +1,33 @@
 /**
  * Settlement Calculator
  *
- * Given a list of expenses, calculates the net balance for each person,
- * then produces a minimal set of transactions to settle all debts.
+ * Ledger-based balance calculation — balances are always derived from
+ * expense transactions, never stored.
  *
  * Algorithm:
  * 1. Compute net balance per person: (amount paid) - (amount owed)
- *    Positive balance = others owe this person
- *    Negative balance = this person owes others
- * 2. Greedy settlement: repeatedly match the most-negative with
- *    the most-positive until all balances are zero.
- *    This minimises the number of transactions.
+ *    Positive = others owe this person; Negative = this person owes others
+ * 2. Debt simplification: greedy matching of most-negative with most-positive
+ *    minimises transaction count to settle all debts.
+ * 3. Expense contribution breakdown: every balance entry carries the list of
+ *    underlying expenses so any number can be explained (Rohan's requirement).
  */
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface ExpenseContribution {
+  expenseId: string;
+  description: string;
+  date: string;
+  totalAmount: number;
+  splitType: string;
+  /** How much this person paid toward this expense */
+  paidAmount: number;
+  /** How much this person owes for this expense */
+  owedAmount: number;
+  /** Net effect on this person's balance from this expense */
+  net: number;
+}
 
 export interface BalanceEntry {
   userId?: string;
@@ -21,6 +37,8 @@ export interface BalanceEntry {
   paid: number;
   owes: number;
   net: number; // positive = is owed money, negative = owes money
+  /** Expense-level breakdown for traceability */
+  contributions: ExpenseContribution[];
 }
 
 export interface Settlement {
@@ -33,6 +51,10 @@ export interface Settlement {
 }
 
 export interface ExpenseForCalculation {
+  id: string;
+  description: string;
+  date: string;
+  splitType: string;
   paidById: string;
   paidByName: string;
   totalAmount: number;
@@ -45,10 +67,11 @@ export interface ExpenseForCalculation {
   }[];
 }
 
+// ── Balance calculation ────────────────────────────────────────────────────────
+
 export function calculateBalances(
   expenses: ExpenseForCalculation[]
 ): Map<string, BalanceEntry> {
-  // key: userId or `guest:${guestName}`
   const balances = new Map<string, BalanceEntry>();
 
   const getKey = (userId?: string, guestName?: string) =>
@@ -60,7 +83,7 @@ export function calculateBalances(
     userId?: string,
     guestName?: string,
     guestEmail?: string
-  ) => {
+  ): BalanceEntry => {
     if (!balances.has(key)) {
       balances.set(key, {
         userId,
@@ -70,16 +93,20 @@ export function calculateBalances(
         paid: 0,
         owes: 0,
         net: 0,
+        contributions: [],
       });
     }
     return balances.get(key)!;
   };
 
   for (const expense of expenses) {
-    // Credit the payer
     const payerKey = expense.paidById;
     const payer = ensureEntry(payerKey, expense.paidByName, expense.paidById);
     payer.paid += expense.totalAmount;
+
+    // Credit the payer's contribution for this expense
+    const payerContrib = getOrCreateContribution(payer, expense);
+    payerContrib.paidAmount += expense.totalAmount;
 
     // Debit each participant
     for (const p of expense.participants) {
@@ -87,37 +114,77 @@ export function calculateBalances(
       const name = p.userName ?? p.guestName ?? 'Guest';
       const entry = ensureEntry(key, name, p.userId, p.guestName, p.guestEmail);
       entry.owes += p.amountOwed;
+
+      const contrib = getOrCreateContribution(entry, expense);
+      contrib.owedAmount += p.amountOwed;
     }
   }
 
-  // Compute net
+  // Finalise: round totals and compute per-expense net
   for (const entry of balances.values()) {
     entry.net = Math.round((entry.paid - entry.owes) * 100) / 100;
     entry.paid = Math.round(entry.paid * 100) / 100;
     entry.owes = Math.round(entry.owes * 100) / 100;
+
+    for (const c of entry.contributions) {
+      c.paidAmount = Math.round(c.paidAmount * 100) / 100;
+      c.owedAmount = Math.round(c.owedAmount * 100) / 100;
+      c.net = Math.round((c.paidAmount - c.owedAmount) * 100) / 100;
+    }
+    // Only keep contributions that actually affect this person's balance
+    entry.contributions = entry.contributions.filter(
+      (c) => c.paidAmount > 0 || c.owedAmount > 0
+    );
   }
 
   return balances;
 }
 
+function getOrCreateContribution(
+  entry: BalanceEntry,
+  expense: ExpenseForCalculation
+): ExpenseContribution {
+  let contrib = entry.contributions.find((c) => c.expenseId === expense.id);
+  if (!contrib) {
+    contrib = {
+      expenseId: expense.id,
+      description: expense.description,
+      date: expense.date,
+      totalAmount: expense.totalAmount,
+      splitType: expense.splitType,
+      paidAmount: 0,
+      owedAmount: 0,
+      net: 0,
+    };
+    entry.contributions.push(contrib);
+  }
+  return contrib;
+}
+
+// ── Debt simplification ────────────────────────────────────────────────────────
+
+/**
+ * Aisha's requirement: simplified settlements — who pays whom and how much.
+ * Uses a greedy algorithm: match largest debtor with largest creditor first.
+ * This minimises the number of transactions needed.
+ */
 export function calculateSettlements(
   balances: Map<string, BalanceEntry>
 ): Settlement[] {
   const settlements: Settlement[] = [];
 
-  // Separate into creditors (net > 0) and debtors (net < 0)
-  const creditors: Array<{ key: string; entry: BalanceEntry; amount: number }> = [];
-  const debtors: Array<{ key: string; entry: BalanceEntry; amount: number }> = [];
+  const creditors: Array<{ entry: BalanceEntry; amount: number }> = [];
+  const debtors: Array<{ entry: BalanceEntry; amount: number }> = [];
 
-  for (const [key, entry] of balances.entries()) {
+  for (const entry of balances.values()) {
     if (entry.net > 0.01) {
-      creditors.push({ key, entry, amount: entry.net });
+      creditors.push({ entry, amount: entry.net });
     } else if (entry.net < -0.01) {
-      debtors.push({ key, entry, amount: -entry.net });
+      debtors.push({ entry, amount: -entry.net });
     }
   }
 
-  // Sort descending for greedy matching
+  // Sort descending so the greedy match is optimal
   creditors.sort((a, b) => b.amount - a.amount);
   debtors.sort((a, b) => b.amount - a.amount);
 
@@ -148,4 +215,23 @@ export function calculateSettlements(
   }
 
   return settlements;
+}
+
+// ── Individual balance summary ─────────────────────────────────────────────────
+
+export interface IndividualBalanceSummary {
+  userId: string;
+  name: string;
+  /** Groups where this user has an outstanding balance */
+  groupSummaries: Array<{
+    groupId: string;
+    groupName: string;
+    net: number;
+    paid: number;
+    owes: number;
+  }>;
+  /** Overall net across all groups */
+  totalNet: number;
+  totalPaid: number;
+  totalOwes: number;
 }

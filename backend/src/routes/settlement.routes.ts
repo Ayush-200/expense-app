@@ -1,9 +1,12 @@
 import { Router } from 'express';
-import { getGroupBalances } from '../controllers/settlement.controller';
+import { getGroupBalances, getMyBalances } from '../controllers/settlement.controller';
 import { authenticate } from '../middleware/auth.middleware';
 
 const router = Router();
 
-router.get('/groups/:id/balances', authenticate, getGroupBalances);
+router.use(authenticate);
+
+router.get('/groups/:id/balances', getGroupBalances);
+router.get('/me', getMyBalances);
 
 export default router;

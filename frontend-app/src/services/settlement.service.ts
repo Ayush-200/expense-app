@@ -8,6 +8,18 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+export interface ExpenseContribution {
+  expenseId: string;
+  description: string;
+  date: string;
+  totalAmount: number;
+  splitType: string;
+  paidAmount: number;
+  owedAmount: number;
+  /** positive = this person came out ahead; negative = they owe more than they paid */
+  net: number;
+}
+
 export interface BalanceEntry {
   userId?: string;
   guestName?: string;
@@ -15,11 +27,13 @@ export interface BalanceEntry {
   paid: number;
   owes: number;
   net: number;
+  contributions: ExpenseContribution[];
 }
 
 export interface Settlement {
   fromUserId?: string;
   fromName: string;
+  fromGuestName?: string;
   toUserId?: string;
   toName: string;
   amount: number;
@@ -31,9 +45,29 @@ export interface BalancesResponse {
   totalExpenses: number;
 }
 
+export interface GroupBalanceSummary {
+  groupId: string;
+  groupName: string;
+  net: number;
+  paid: number;
+  owes: number;
+}
+
+export interface MyBalancesResponse {
+  groupSummaries: GroupBalanceSummary[];
+  totalNet: number;
+  totalPaid: number;
+  totalOwes: number;
+}
+
 export const settlementService = {
   async getGroupBalances(groupId: string): Promise<BalancesResponse> {
     const res = await api.get<BalancesResponse>(`/settlements/groups/${groupId}/balances`);
+    return res.data;
+  },
+
+  async getMyBalances(): Promise<MyBalancesResponse> {
+    const res = await api.get<MyBalancesResponse>('/settlements/me');
     return res.data;
   },
 };
