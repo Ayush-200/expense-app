@@ -1,3 +1,5 @@
+export type SplitType = 'EQUAL' | 'PERCENTAGE' | 'SHARE';
+
 export interface User {
   id: string;
   name: string;
