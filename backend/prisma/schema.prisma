@@ -5,6 +5,8 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Optimize for serverless/edge (Neon)
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
 model User {
@@ -19,6 +21,8 @@ model User {
   groupMemberships  GroupMember[]
   paidExpenses      Expense[]         @relation("ExpensePaidBy")
   expenseShares     ExpenseParticipant[] @relation("ExpenseParticipant")
+  settlementsFrom   Settlement[]      @relation("SettlementFrom")
+  settlementsTo     Settlement[]      @relation("SettlementTo")
 
   @@map("users")
 }
@@ -32,8 +36,9 @@ model Group {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  members     GroupMember[]
-  expenses    Expense[]
+  members      GroupMember[]
+  expenses     Expense[]
+  settlements  Settlement[]
 
   @@map("groups")
 }
@@ -89,4 +94,24 @@ model ExpenseParticipant {
   user          User?    @relation("ExpenseParticipant", fields: [userId], references: [id])
 
   @@map("expense_participants")
+}
+
+// Settlement records actual payments between users
+// These are NOT stored as expenses but affect balance calculations
+model Settlement {
+  id          String   @id @default(cuid())
+  groupId     String
+  fromUserId  String
+  toUserId    String
+  amount      Decimal  @db.Decimal(10, 2)
+  note        String?
+  date        DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  group       Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  fromUser    User     @relation("SettlementFrom", fields: [fromUserId], references: [id])
+  toUser      User     @relation("SettlementTo", fields: [toUserId], references: [id])
+
+  @@map("settlements")
 }

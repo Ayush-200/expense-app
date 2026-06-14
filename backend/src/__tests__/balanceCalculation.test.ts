@@ -535,3 +535,189 @@ describe('calculateSettlements', () => {
     expect(settlements[0].toName).toBe('Alice');
   });
 });
+
+// ── Settlement tests ──────────────────────────────────────────────────────────
+
+describe('settlements affect balance calculations', () => {
+  it('reduces debt when a settlement is recorded', () => {
+    // Alice paid for everything; Bob owes 50
+    const expenses = [
+      makeExpense({
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 100,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 50 },
+          { userId: 'bob', userName: 'Bob', amountOwed: 50 },
+        ],
+      }),
+    ];
+
+    // Bob pays Alice 30 in cash
+    const settlements = [
+      {
+        id: 'settle-1',
+        date: new Date().toISOString(),
+        fromUserId: 'bob',
+        fromUserName: 'Bob',
+        toUserId: 'alice',
+        toUserName: 'Alice',
+        amount: 30,
+      },
+    ];
+
+    const balances = calculateBalances(expenses, settlements);
+
+    // Alice: paid 100, owes 50 + 30 (settlement received) → net = 100 - 80 = 20
+    // Bob: paid 0 + 30 (settlement paid), owes 50 → net = 30 - 50 = -20
+    expect(balances.get('alice')!.net).toBe(20);
+    expect(balances.get('bob')!.net).toBe(-20);
+  });
+
+  it('fully settles up when settlement equals remaining debt', () => {
+    const expenses = [
+      makeExpense({
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 100,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 50 },
+          { userId: 'bob', userName: 'Bob', amountOwed: 50 },
+        ],
+      }),
+    ];
+
+    // Bob pays the full 50
+    const settlements = [
+      {
+        id: 'settle-1',
+        date: new Date().toISOString(),
+        fromUserId: 'bob',
+        fromUserName: 'Bob',
+        toUserId: 'alice',
+        toUserName: 'Alice',
+        amount: 50,
+      },
+    ];
+
+    const balances = calculateBalances(expenses, settlements);
+
+    // Alice: paid 100, owes 50 + 50 → net = 0
+    // Bob: paid 50, owes 50 → net = 0
+    expect(balances.get('alice')!.net).toBe(0);
+    expect(balances.get('bob')!.net).toBe(0);
+  });
+
+  it('tracks settlement contributions separately', () => {
+    const expenses = [
+      makeExpense({
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 100,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 50 },
+          { userId: 'bob', userName: 'Bob', amountOwed: 50 },
+        ],
+      }),
+    ];
+
+    const settlements = [
+      {
+        id: 'settle-1',
+        date: new Date().toISOString(),
+        fromUserId: 'bob',
+        fromUserName: 'Bob',
+        toUserId: 'alice',
+        toUserName: 'Alice',
+        amount: 30,
+        note: 'Cash',
+      },
+    ];
+
+    const balances = calculateBalances(expenses, settlements);
+    const bob = balances.get('bob')!;
+
+    expect(bob.settlementContributions).toHaveLength(1);
+    expect(bob.settlementContributions[0].amount).toBe(30);
+    expect(bob.settlementContributions[0].net).toBe(30); // Bob's balance improves
+    expect(bob.settlementContributions[0].note).toBe('Cash');
+
+    const alice = balances.get('alice')!;
+    expect(alice.settlementContributions[0].net).toBe(-30); // Alice is owed less
+  });
+
+  it('handles multiple settlements', () => {
+    const expenses = [
+      makeExpense({
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 100,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 50 },
+          { userId: 'bob', userName: 'Bob', amountOwed: 50 },
+        ],
+      }),
+    ];
+
+    const settlements = [
+      {
+        id: 's1',
+        date: new Date().toISOString(),
+        fromUserId: 'bob',
+        fromUserName: 'Bob',
+        toUserId: 'alice',
+        toUserName: 'Alice',
+        amount: 20,
+      },
+      {
+        id: 's2',
+        date: new Date().toISOString(),
+        fromUserId: 'bob',
+        fromUserName: 'Bob',
+        toUserId: 'alice',
+        toUserName: 'Alice',
+        amount: 15,
+      },
+    ];
+
+    const balances = calculateBalances(expenses, settlements);
+
+    // Bob paid 20 + 15 = 35 in settlements
+    expect(balances.get('bob')!.net).toBe(-15); // owes 50, paid 35
+    expect(balances.get('alice')!.net).toBe(15); // owed 50, received 35 in settlements
+  });
+
+  it('settlement does not break conservation of balance', () => {
+    const expenses = [
+      makeExpense({
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 90,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 30 },
+          { userId: 'bob', userName: 'Bob', amountOwed: 30 },
+          { userId: 'carol', userName: 'Carol', amountOwed: 30 },
+        ],
+      }),
+    ];
+
+    const settlements = [
+      {
+        id: 's1',
+        date: new Date().toISOString(),
+        fromUserId: 'bob',
+        fromUserName: 'Bob',
+        toUserId: 'alice',
+        toUserName: 'Alice',
+        amount: 20,
+      },
+    ];
+
+    const balances = calculateBalances(expenses, settlements);
+    const totalNet = Array.from(balances.values()).reduce(
+      (s, e) => s + e.net,
+      0
+    );
+    expect(Math.abs(totalNet)).toBeLessThan(0.01);
+  });
+});

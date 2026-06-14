@@ -20,6 +20,17 @@ export interface ExpenseContribution {
   net: number;
 }
 
+export interface SettlementContribution {
+  settlementId: string;
+  date: string;
+  fromUserName: string;
+  toUserName: string;
+  amount: number;
+  note?: string;
+  /** positive if your balance improved (you paid off debt or someone paid you), negative if your balance decreased (you received payment and are owed less) */
+  net: number;
+}
+
 export interface BalanceEntry {
   userId?: string;
   guestName?: string;
@@ -28,6 +39,7 @@ export interface BalanceEntry {
   owes: number;
   net: number;
   contributions: ExpenseContribution[];
+  settlementContributions: SettlementContribution[];
 }
 
 export interface Settlement {
@@ -60,6 +72,29 @@ export interface MyBalancesResponse {
   totalOwes: number;
 }
 
+export interface SettlementRecord {
+  id: string;
+  groupId: string;
+  fromUserId: string;
+  toUserId: string;
+  amount: string;
+  note?: string;
+  date: string;
+  createdAt: string;
+  fromUser: { id: string; name: string };
+  toUser: { id: string; name: string };
+}
+
+export interface SettlementHistoryResponse {
+  settlements: SettlementRecord[];
+}
+
+export interface CreateSettlementData {
+  toUserId: string;
+  amount: number;
+  note?: string;
+}
+
 export const settlementService = {
   async getGroupBalances(groupId: string): Promise<BalancesResponse> {
     const res = await api.get<BalancesResponse>(`/settlements/groups/${groupId}/balances`);
@@ -68,6 +103,21 @@ export const settlementService = {
 
   async getMyBalances(): Promise<MyBalancesResponse> {
     const res = await api.get<MyBalancesResponse>('/settlements/me');
+    return res.data;
+  },
+
+  async getSettlementHistory(groupId: string): Promise<SettlementHistoryResponse> {
+    const res = await api.get<SettlementHistoryResponse>(`/settlements/groups/${groupId}/history`);
+    return res.data;
+  },
+
+  async createSettlement(groupId: string, data: CreateSettlementData): Promise<{ message: string; settlement: SettlementRecord }> {
+    const res = await api.post(`/settlements/groups/${groupId}`, data);
+    return res.data;
+  },
+
+  async deleteSettlement(settlementId: string): Promise<{ message: string }> {
+    const res = await api.delete(`/settlements/${settlementId}`);
     return res.data;
   },
 };
