@@ -10,6 +10,7 @@ import { GroupDetail } from './pages/GroupDetail';
 import { Expenses } from './pages/Expenses';
 import { ExpenseDetail } from './pages/ExpenseDetail';
 import { Balances } from './pages/Balances';
+import { EventTimeline } from './pages/EventTimeline';
 
 function App() {
   return (
@@ -27,6 +28,7 @@ function App() {
           <Route path="/expenses" element={<ProtectedRoute><Expenses /></ProtectedRoute>} />
           <Route path="/expenses/:id" element={<ProtectedRoute><ExpenseDetail /></ProtectedRoute>} />
           <Route path="/balances" element={<ProtectedRoute><Balances /></ProtectedRoute>} />
+          <Route path="/events" element={<ProtectedRoute><EventTimeline /></ProtectedRoute>} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>

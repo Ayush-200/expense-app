@@ -1,4 +1,4 @@
-export type SplitType = 'EQUAL' | 'PERCENTAGE' | 'SHARE';
+export type SplitType = 'EQUAL' | 'PERCENTAGE' | 'SHARE' | 'EXACT';
 
 export interface User {
   id: string;
@@ -44,10 +44,6 @@ export interface GroupMember {
   joinedAt: string;
   leftAt?: string | null;
   user: User;
-}
-
-export interface AddMemberData {
-  userId: string;
 }
 
 export interface CreateGroupData {

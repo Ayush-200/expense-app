@@ -3,11 +3,12 @@ import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom'
 import { expenseService } from '../services/expense.service';
 import { groupService } from '../services/group.service';
 import { useAuth } from '../context/AuthContext';
-import { Expense, Group, CreateExpenseData } from '../types';
+import { Expense, ExpenseParticipant, Group, CreateExpenseData } from '../types';
 import { Layout } from '../components/Layout';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { ExpenseForm } from '../components/ExpenseForm';
+import { formatDateLong } from '../utils/date';
 
 const SPLIT_LABELS: Record<string, string> = {
   EQUAL: 'Equal Split',
@@ -24,6 +25,7 @@ export function ExpenseDetail() {
   const { user } = useAuth();
 
   const [expense, setExpense] = useState<Expense | null>(null);
+  const [participants, setParticipants] = useState<ExpenseParticipant[]>([]);
   const [group, setGroup] = useState<Group | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
@@ -40,8 +42,17 @@ export function ExpenseDetail() {
 
   const loadExpense = async () => {
     try {
-      const data = await expenseService.getExpense(id!);
-      setExpense(data.expense);
+      const [expData, partData] = await Promise.all([
+        expenseService.getExpense(id!),
+        expenseService.getExpenseParticipants(id!),
+      ]);
+      setExpense(expData.expense);
+      if (!partData.participants || partData.participants.length === 0) {
+        setError('No participant data found for this expense');
+        setParticipants([]);
+      } else {
+        setParticipants(partData.participants);
+      }
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to load expense');
     } finally {
@@ -154,11 +165,7 @@ export function ExpenseDetail() {
                 <div>
                   <h3 className="text-2xl font-bold text-white">{expense.description}</h3>
                   <p className="text-gray-400 text-sm mt-1">
-                    {new Date(expense.date).toLocaleDateString('en-IN', {
-                      year: 'numeric',
-                      month: 'long',
-                      day: 'numeric',
-                    })}
+                    {formatDateLong(expense.date)}
                   </p>
                 </div>
 
@@ -193,63 +200,73 @@ export function ExpenseDetail() {
 
             <Card>
               <h3 className="text-xl font-semibold text-white mb-4">
-                Split Details ({expense.participants.length} participants)
+                Split Details
               </h3>
 
-              <div className="space-y-2">
-                {expense.participants.map((p) => {
-                  const displayName = p.user?.name ?? p.guestName ?? 'Guest';
-                  const displayEmail = p.user?.email ?? p.guestEmail ?? '';
-                  const isGuest = !p.userId;
-
-                  return (
-                    <div
-                      key={p.id}
-                      className="flex items-center justify-between p-3 bg-gray-800 rounded-lg border border-gray-700"
-                    >
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <p className="text-white font-medium">{displayName}</p>
-                          {isGuest && (
-                            <span className="text-xs px-2 py-0.5 bg-gray-700 text-gray-400 rounded">
-                              Guest
-                            </span>
-                          )}
-                        </div>
-                        {displayEmail && (
-                          <p className="text-gray-400 text-sm">{displayEmail}</p>
-                        )}
-                      </div>
-
-                      <div className="text-right">
-                        <p className="text-white font-semibold text-lg">
-                          ₹{Number(p.amountOwed).toFixed(2)}
-                        </p>
-                        {expense.splitType === 'PERCENTAGE' && p.splitMetadata?.percentage && (
-                          <p className="text-gray-500 text-xs">{p.splitMetadata.percentage}%</p>
-                        )}
-                        {expense.splitType === 'SHARE' && p.splitMetadata?.shares && (
-                          <p className="text-gray-500 text-xs">
-                            {p.splitMetadata.shares} share{Number(p.splitMetadata.shares) !== 1 ? 's' : ''}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Show balance summary */}
-              <div className="mt-6 pt-4 border-t border-gray-800">
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-400">Total</span>
-                  <span className="text-white font-semibold text-lg">
-                    ₹{expense.participants
-                      .reduce((sum, p) => sum + Number(p.amountOwed), 0)
-                      .toFixed(2)}
-                  </span>
+              {participants.length === 0 ? (
+                <div className="p-3 rounded-lg text-sm bg-red-900/30 text-red-400 border border-red-800">
+                  No participant data found for this expense
                 </div>
-              </div>
+              ) : (
+                <>
+                  <p className="text-gray-400 text-sm mb-4">
+                    {participants.length} participant{participants.length !== 1 ? 's' : ''}
+                  </p>
+                  <div className="space-y-2">
+                    {participants.map((p) => {
+                      const displayName = p.user?.name ?? p.guestName ?? 'Guest';
+                      const displayEmail = p.user?.email ?? p.guestEmail ?? '';
+                      const isGuest = !p.userId;
+
+                      return (
+                        <div
+                          key={p.id}
+                          className="flex items-center justify-between p-3 bg-gray-800 rounded-lg border border-gray-700"
+                        >
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <p className="text-white font-medium">{displayName}</p>
+                              {isGuest && (
+                                <span className="text-xs px-2 py-0.5 bg-gray-700 text-gray-400 rounded">
+                                  Guest
+                                </span>
+                              )}
+                            </div>
+                            {displayEmail && (
+                              <p className="text-gray-400 text-sm">{displayEmail}</p>
+                            )}
+                          </div>
+
+                          <div className="text-right">
+                            <p className="text-white font-semibold text-lg">
+                              ₹{Number(p.amountOwed).toFixed(2)}
+                            </p>
+                            {expense.splitType === 'PERCENTAGE' && typeof p.splitMetadata?.percentage === 'number' && (
+                              <p className="text-gray-500 text-xs">{`${p.splitMetadata!.percentage}%`}</p>
+                            )}
+                            {expense.splitType === 'SHARE' && typeof p.splitMetadata?.shares === 'number' && (
+                              <p className="text-gray-500 text-xs">
+                                {`${p.splitMetadata!.shares} share${p.splitMetadata!.shares !== 1 ? 's' : ''}`}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-6 pt-4 border-t border-gray-800">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-400">Total</span>
+                      <span className="text-white font-semibold text-lg">
+                        ₹{participants
+                          .reduce((sum, p) => sum + Number(p.amountOwed), 0)
+                          .toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
             </Card>
           </>
         )}

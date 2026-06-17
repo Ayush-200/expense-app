@@ -15,6 +15,7 @@ import { Layout } from '../components/Layout';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
+import { formatDate } from '../utils/date';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -68,7 +69,7 @@ function ContributionBreakdown({
                       <div>
                         <p className="text-white text-sm font-medium">{c.description}</p>
                         <p className="text-gray-500 text-xs mt-0.5">
-                          {new Date(c.date).toLocaleDateString()} ·{' '}
+                          {formatDate(c.date)} ·{' '}
                           <span className="uppercase">{c.splitType}</span> split ·{' '}
                           total {fmt(c.totalAmount)}
                         </p>
@@ -111,7 +112,7 @@ function ContributionBreakdown({
                           {s.fromUserName} → {s.toUserName}
                         </p>
                         <p className="text-gray-500 text-xs mt-0.5">
-                          {new Date(s.date).toLocaleDateString()}
+                          {formatDate(s.date)}
                           {s.note && ` · ${s.note}`}
                         </p>
                       </div>
@@ -367,7 +368,7 @@ function SettlementHistoryModal({
                           {isTo ? 'you' : s.toUser.name}
                         </p>
                         <p className="text-gray-500 text-xs mt-0.5">
-                          {new Date(s.date).toLocaleDateString()}
+                          {formatDate(s.date)}
                           {s.note && ` · ${s.note}`}
                         </p>
                       </div>

@@ -3,9 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-  // Optimize for serverless/edge (Neon)
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_DATABASE_URL")
 }
 
@@ -23,6 +22,8 @@ model User {
   expenseShares     ExpenseParticipant[] @relation("ExpenseParticipant")
   settlementsFrom   Settlement[]      @relation("SettlementFrom")
   settlementsTo     Settlement[]      @relation("SettlementTo")
+  importJobs        ImportJob[]
+  aliases           UserAlias[]
 
   @@map("users")
 }
@@ -39,6 +40,7 @@ model Group {
   members      GroupMember[]
   expenses     Expense[]
   settlements  Settlement[]
+  importJobs   ImportJob[]
 
   @@map("groups")
 }
@@ -57,18 +59,20 @@ model GroupMember {
   @@map("group_members")
 }
 
-// Split types: EQUAL | EXACT | PERCENTAGE | SHARE
-// Stored as string so new types can be added without schema migration
 model Expense {
-  id           String    @id @default(cuid())
-  groupId      String
-  paidById     String
-  description  String
-  totalAmount  Decimal   @db.Decimal(10, 2)
-  splitType    String    // "EQUAL" | "EXACT" | "PERCENTAGE" | "SHARE"
-  date         DateTime  @default(now())
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id             String    @id @default(cuid())
+  groupId        String
+  paidById       String
+  description    String
+  totalAmount    Decimal   @db.Decimal(10, 2)
+  splitType      String
+  date           DateTime  @default(now())
+  currency       String    @default("INR")
+  originalAmount Decimal?  @db.Decimal(10, 2)
+  exchangeRate   Decimal?  @db.Decimal(10, 6)
+  type           String    @default("EXPENSE") // "EXPENSE" | "REFUND_TRANSACTION"
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   group        Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
   paidBy       User      @relation("ExpensePaidBy", fields: [paidById], references: [id])
@@ -80,14 +84,10 @@ model Expense {
 model ExpenseParticipant {
   id            String   @id @default(cuid())
   expenseId     String
-  // Nullable: if null this is a guest participant
   userId        String?
-  // Guest participant fields (used when userId is null)
   guestName     String?
   guestEmail    String?
-  // The final calculated amount this participant owes
   amountOwed    Decimal  @db.Decimal(10, 2)
-  // Raw input stored for display & recalculation (percentage, shares, exact)
   splitMetadata Json?
 
   expense       Expense  @relation(fields: [expenseId], references: [id], onDelete: Cascade)
@@ -96,14 +96,13 @@ model ExpenseParticipant {
   @@map("expense_participants")
 }
 
-// Settlement records actual payments between users
-// These are NOT stored as expenses but affect balance calculations
 model Settlement {
   id          String   @id @default(cuid())
   groupId     String
   fromUserId  String
   toUserId    String
   amount      Decimal  @db.Decimal(10, 2)
+  currency    String   @default("INR")
   note        String?
   date        DateTime @default(now())
   createdAt   DateTime @default(now())
@@ -114,4 +113,59 @@ model Settlement {
   toUser      User     @relation("SettlementTo", fields: [toUserId], references: [id])
 
   @@map("settlements")
+}
+
+// User alias mapping for normalization
+model UserAlias {
+  id          String   @id @default(cuid())
+  userId      String
+  alias       String   // normalized alias
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, alias])
+  @@map("user_aliases")
+}
+
+model ImportJob {
+  id             String    @id @default(cuid())
+  groupId        String
+  userId         String
+  fileName       String
+  status         String    // PENDING, PROCESSING, COMPLETED, FAILED, REQUIRES_APPROVAL
+  totalRows      Int
+  processedRows  Int       @default(0)
+  successfulRows Int       @default(0)
+  failedRows     Int       @default(0)
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  rowData        Json?     // Stores the parsed/normalized rows list before final import
+
+  group          Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user           User      @relation(fields: [userId], references: [id])
+  anomalies      ImportAnomaly[]
+
+  @@map("import_jobs")
+}
+
+model ImportAnomaly {
+  id             String   @id @default(cuid())
+  importJobId    String
+  rowNumber      Int
+  severity       String   // ERROR, WARNING, INFO
+  anomalyType    String   // DUPLICATE, MISSING_FIELD, INVALID_DATE, etc.
+  field          String?
+  message        String
+  originalValue  String?
+  suggestedValue String?
+  resolution     String?  // AUTO_FIXED, USER_APPROVED, SKIPPED
+  rowData        Json
+  createdAt      DateTime @default(now())
+
+  importJob      ImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  @@map("import_anomalies")
 }

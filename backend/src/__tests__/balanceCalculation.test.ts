@@ -276,6 +276,166 @@ describe('calculateBalances', () => {
   });
 });
 
+// ── Refund / negative-amount transaction tests ────────────────────────────────
+
+describe('refund transactions', () => {
+  it('refund with same participants splits negative amount equally', () => {
+    // 3 people share a 60 expense, then a -30 refund among same 3
+    const result = calculateSplits(-30, 'EQUAL', [
+      { userId: 'A' },
+      { userId: 'B' },
+      { userId: 'C' },
+    ]);
+    expect(result).toHaveLength(3);
+    result.forEach((r) => expect(r.amountOwed).toBe(-10));
+  });
+
+  it('refund with different participants (parasailing example)', () => {
+    // Original: 150 / 5 = 30 each (Aisha, Rohan, Priya, Dev, Kabir guest)
+    // Refund: -30 / 4 = -7.5 each (Aisha, Rohan, Priya, Dev; Kabir excluded)
+    const result = calculateSplits(-30, 'EQUAL', [
+      { userId: 'aisha' },
+      { userId: 'rohan' },
+      { userId: 'priya' },
+      { userId: 'dev' },
+    ]);
+    expect(result).toHaveLength(4);
+    result.forEach((r) => expect(r.amountOwed).toBe(-7.5));
+
+    // Combined net liabilities
+    const expectedNet: Record<string, number> = {
+      aisha: 30 - 7.5,
+      rohan: 30 - 7.5,
+      priya: 30 - 7.5,
+      dev: 30 - 7.5,
+    };
+    // Kabir only in original: 30
+    // Total should be 120
+    const totalNet = Object.values(expectedNet).reduce((s, v) => s + v, 0) + 30;
+    expect(totalNet).toBe(120);
+  });
+
+  it('balance calculation correctly nets refund against original expense', () => {
+    // Parasailing example as full balance calc
+    const expenses = [
+      makeExpense({
+        description: 'Parasailing',
+        paidById: 'dev',
+        paidByName: 'Dev',
+        totalAmount: 150,
+        participants: [
+          { userId: 'aisha', userName: 'Aisha', amountOwed: 30 },
+          { userId: 'rohan', userName: 'Rohan', amountOwed: 30 },
+          { userId: 'priya', userName: 'Priya', amountOwed: 30 },
+          { userId: 'dev', userName: 'Dev', amountOwed: 30 },
+          { guestName: "Dev's friend Kabir", amountOwed: 30 },
+        ],
+      }),
+      makeExpense({
+        description: 'Parasailing refund',
+        paidById: 'dev',
+        paidByName: 'Dev',
+        totalAmount: -30,
+        participants: [
+          { userId: 'aisha', userName: 'Aisha', amountOwed: -7.5 },
+          { userId: 'rohan', userName: 'Rohan', amountOwed: -7.5 },
+          { userId: 'priya', userName: 'Priya', amountOwed: -7.5 },
+          { userId: 'dev', userName: 'Dev', amountOwed: -7.5 },
+        ],
+      }),
+    ];
+
+    const balances = calculateBalances(expenses);
+
+    // Dev paid 150 - 30 = 120 total
+    expect(balances.get('dev')!.paid).toBe(120);
+
+    // Each member owes net: 30 - 7.5 = 22.5
+    expect(balances.get('aisha')!.owes).toBe(22.5);
+    expect(balances.get('rohan')!.owes).toBe(22.5);
+    expect(balances.get('priya')!.owes).toBe(22.5);
+
+    // Dev owes himself net 22.5, plus owes 30 for his own share in original
+    expect(balances.get('dev')!.owes).toBe(22.5);
+
+    // Kabir owes 30 (guest, no refund)
+    const kabir = balances.get("guest:Dev's friend Kabir")!;
+    expect(kabir.owes).toBe(30);
+
+    // Conservation: total net = 0
+    const totalNet = Array.from(balances.values()).reduce((s, e) => s + e.net, 0);
+    expect(Math.abs(totalNet)).toBeLessThan(0.01);
+  });
+
+  it('partial refund only affects a subset of participants', () => {
+    // Expense: 100 split equally among 4 → 25 each
+    // Refund: -20 split equally among 2 of them → -10 each
+    const result = calculateSplits(-20, 'EQUAL', [
+      { userId: 'A' },
+      { userId: 'B' },
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result[0].amountOwed).toBe(-10);
+    expect(result[1].amountOwed).toBe(-10);
+  });
+
+  it('multiple refunds for one expense accumulate correctly', () => {
+    // Original: 200 split equally among 4 → 50 each
+    // Refund 1: -40 equally among all 4 → -10 each
+    // Refund 2: -20 equally among all 4 → -5 each
+    // Net: 50 - 10 - 5 = 35 each
+    const expenses = [
+      makeExpense({
+        paidById: 'A',
+        paidByName: 'Alice',
+        totalAmount: 200,
+        participants: [
+          { userId: 'A', userName: 'Alice', amountOwed: 50 },
+          { userId: 'B', userName: 'Bob', amountOwed: 50 },
+          { userId: 'C', userName: 'Carol', amountOwed: 50 },
+          { userId: 'D', userName: 'Dave', amountOwed: 50 },
+        ],
+      }),
+      makeExpense({
+        paidById: 'A',
+        paidByName: 'Alice',
+        totalAmount: -40,
+        participants: [
+          { userId: 'A', userName: 'Alice', amountOwed: -10 },
+          { userId: 'B', userName: 'Bob', amountOwed: -10 },
+          { userId: 'C', userName: 'Carol', amountOwed: -10 },
+          { userId: 'D', userName: 'Dave', amountOwed: -10 },
+        ],
+      }),
+      makeExpense({
+        paidById: 'A',
+        paidByName: 'Alice',
+        totalAmount: -20,
+        participants: [
+          { userId: 'A', userName: 'Alice', amountOwed: -5 },
+          { userId: 'B', userName: 'Bob', amountOwed: -5 },
+          { userId: 'C', userName: 'Carol', amountOwed: -5 },
+          { userId: 'D', userName: 'Dave', amountOwed: -5 },
+        ],
+      }),
+    ];
+
+    const balances = calculateBalances(expenses);
+
+    // Alice paid 200 - 40 - 20 = 140
+    expect(balances.get('A')!.paid).toBe(140);
+
+    // Each owes 50 - 10 - 5 = 35
+    for (const id of ['A', 'B', 'C', 'D']) {
+      expect(balances.get(id)!.owes).toBe(35);
+    }
+
+    // Conservation check
+    const totalNet = Array.from(balances.values()).reduce((s, e) => s + e.net, 0);
+    expect(Math.abs(totalNet)).toBeLessThan(0.01);
+  });
+});
+
 // ── Guest participants ────────────────────────────────────────────────────────
 
 describe('guest participants', () => {
@@ -328,6 +488,144 @@ describe('guest participants', () => {
     expect(balances.has('bob-uid')).toBe(true);
     expect(balances.has('guest:Bob')).toBe(true);
   });
+
+  it('single guest in equal split', () => {
+    const expenses = [
+      makeExpense({
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 60,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 30 },
+          { guestName: 'Guest1', amountOwed: 30 },
+        ],
+      }),
+    ];
+
+    const balances = calculateBalances(expenses);
+    const guest = balances.get('guest:Guest1')!;
+    expect(guest.owes).toBe(30);
+    expect(guest.net).toBe(-30);
+    expect(guest.name).toBe('Guest1');
+    expect(guest.guestName).toBe('Guest1');
+  });
+
+  it('multiple guests in same expense', () => {
+    const expenses = [
+      makeExpense({
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 90,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 30 },
+          { guestName: 'Guest1', amountOwed: 30 },
+          { guestName: 'Guest2', amountOwed: 30 },
+        ],
+      }),
+    ];
+
+    const balances = calculateBalances(expenses);
+    expect(balances.get('guest:Guest1')!.owes).toBe(30);
+    expect(balances.get('guest:Guest2')!.owes).toBe(30);
+    expect(balances.get('alice')!.net).toBe(60);
+  });
+
+  it('guest excluded from refund (parasailing scenario)', () => {
+    // Original expense: 5 people (including guest)
+    // Refund: only 4 (guest excluded)
+    const expenses = [
+      makeExpense({
+        paidById: 'dev',
+        paidByName: 'Dev',
+        totalAmount: 100,
+        participants: [
+          { userId: 'a', userName: 'A', amountOwed: 20 },
+          { userId: 'b', userName: 'B', amountOwed: 20 },
+          { userId: 'c', userName: 'C', amountOwed: 20 },
+          { userId: 'd', userName: 'D', amountOwed: 20 },
+          { guestName: 'Guest1', amountOwed: 20 },
+        ],
+      }),
+      makeExpense({
+        paidById: 'dev',
+        paidByName: 'Dev',
+        totalAmount: -20,
+        participants: [
+          { userId: 'a', userName: 'A', amountOwed: -5 },
+          { userId: 'b', userName: 'B', amountOwed: -5 },
+          { userId: 'c', userName: 'C', amountOwed: -5 },
+          { userId: 'd', userName: 'D', amountOwed: -5 },
+        ],
+      }),
+    ];
+
+    const balances = calculateBalances(expenses);
+
+    // Guest owes full 20
+    expect(balances.get('guest:Guest1')!.owes).toBe(20);
+    expect(balances.get('guest:Guest1')!.net).toBe(-20);
+
+    // Each registered user owes net 15
+    expect(balances.get('a')!.owes).toBe(15);
+    expect(balances.get('b')!.owes).toBe(15);
+    expect(balances.get('c')!.owes).toBe(15);
+    expect(balances.get('d')!.owes).toBe(15);
+  });
+
+  it('guest in share split', () => {
+    // SHARE split: Alice 2 shares, Guest1 1 share
+    // Total: 3 shares → each share = 60/3 = 20
+    // Alice owes 40, Guest1 owes 20
+    const result = calculateSplits(60, 'SHARE', [
+      { userId: 'alice', shares: 2 },
+      { guestName: 'Guest1', shares: 1 },
+    ]);
+
+    expect(result[0].amountOwed).toBe(40);
+    expect(result[1].guestName).toBe('Guest1');
+    expect(result[1].amountOwed).toBe(20);
+
+    // Full balance calc
+    const balances = calculateBalances([
+      makeExpense({
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 60,
+        participants: result.map(r => ({
+          userId: r.userId ?? undefined,
+          guestName: r.guestName ?? undefined,
+          userName: r.userId ? 'Alice' : r.guestName ?? 'Guest',
+          amountOwed: r.amountOwed,
+        })),
+      }),
+    ]);
+
+    const guest = balances.get('guest:Guest1')!;
+    expect(guest.owes).toBe(20);
+    expect(guest.net).toBe(-20);
+  });
+
+  it('guest appears in debt simplification settlements', () => {
+    const expenses = [
+      makeExpense({
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 60,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 30 },
+          { guestName: 'Guest1', amountOwed: 30 },
+        ],
+      }),
+    ];
+
+    const balances = calculateBalances(expenses);
+    const settlements = calculateSettlements(balances);
+
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0].fromGuestName).toBe('Guest1');
+    expect(settlements[0].toName).toBe('Alice');
+    expect(settlements[0].amount).toBe(30);
+  });
 });
 
 // ── Member joins / leaves ─────────────────────────────────────────────────────
@@ -366,6 +664,94 @@ describe('member join / leave scenarios', () => {
     expect(carol.owes).toBe(30);
     expect(carol.contributions).toHaveLength(1);
     expect(carol.contributions[0].description).toBe('After Carol joined');
+  });
+
+  it('member charged after leaving is excluded from split', () => {
+    // Meera left on 31-03-2026, expense is on 02-04-2026
+    // In the real flow, shapeExpenses() filters by membership.
+    // Here we simulate the already-filtered data: Meera not in participants.
+    const expenses = [
+      makeExpense({
+        description: 'After Meera left',
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 60,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 30 },
+          { userId: 'bob', userName: 'Bob', amountOwed: 30 },
+          // Meera excluded — she was not a member on this date
+        ],
+      }),
+    ];
+
+    const balances = calculateBalances(expenses);
+    expect(balances.has('meera')).toBe(false);
+    expect(balances.get('alice')!.owes).toBe(30);
+    expect(balances.get('bob')!.owes).toBe(30);
+    expect(balances.get('alice')!.net).toBe(30);
+  });
+
+  it('member charged before joining is excluded from split', () => {
+    // Sam joined on 08-04-2026, expense is before that
+    // Simulate filtered data: Sam not in participants
+    const expenses = [
+      makeExpense({
+        description: 'Before Sam joined',
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 40,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 20 },
+          { userId: 'bob', userName: 'Bob', amountOwed: 20 },
+          // Sam excluded — hadn't joined yet
+        ],
+      }),
+    ];
+
+    const balances = calculateBalances(expenses);
+    expect(balances.has('sam')).toBe(false);
+  });
+
+  it('expense on exact leave date is included (member active on that day)', () => {
+    // Meera left on 31-03-2026, expense is on 31-03-2026
+    // leftAt boundary: expenseDate <= leftAt → still a member
+    const expenses = [
+      makeExpense({
+        description: 'On Meera leave day',
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 90,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 30 },
+          { userId: 'bob', userName: 'Bob', amountOwed: 30 },
+          { userId: 'meera', userName: 'Meera', amountOwed: 30 },
+        ],
+      }),
+    ];
+
+    const balances = calculateBalances(expenses);
+    expect(balances.get('meera')!.owes).toBe(30);
+  });
+
+  it('expense on exact join date is included (member active on that day)', () => {
+    // Sam joined on 08-04-2026, expense is on 08-04-2026
+    // joinedAt boundary: expenseDate >= joinedAt → is a member
+    const expenses = [
+      makeExpense({
+        description: 'On Sam join day',
+        paidById: 'alice',
+        paidByName: 'Alice',
+        totalAmount: 90,
+        participants: [
+          { userId: 'alice', userName: 'Alice', amountOwed: 30 },
+          { userId: 'bob', userName: 'Bob', amountOwed: 30 },
+          { userId: 'sam', userName: 'Sam', amountOwed: 30 },
+        ],
+      }),
+    ];
+
+    const balances = calculateBalances(expenses);
+    expect(balances.get('sam')!.owes).toBe(30);
   });
 
   it('member who left still has their historical balance', () => {
@@ -685,6 +1071,114 @@ describe('settlements affect balance calculations', () => {
     // Bob paid 20 + 15 = 35 in settlements
     expect(balances.get('bob')!.net).toBe(-15); // owes 50, paid 35
     expect(balances.get('alice')!.net).toBe(15); // owed 50, received 35 in settlements
+  });
+
+  it('settlement with Sam paying Aisha 15000 (CSV scenario)', () => {
+    // Sam pays Aisha 15000 directly (a deposit/settlement) — no expense
+    const expenses: ExpenseForCalculation[] = [];
+
+    const settlements = [
+      {
+        id: 'settle-1',
+        date: new Date().toISOString(),
+        fromUserId: 'sam',
+        fromUserName: 'Sam',
+        toUserId: 'aisha',
+        toUserName: 'Aisha',
+        amount: 15000,
+      },
+    ];
+
+    const balances = calculateBalances(expenses, settlements);
+
+    // Sam paid 15000 in settlement → paid = 15000, owes = 0 → net = 15000
+    // Aisha received 15000 in settlement → owes = 15000, paid = 0 → net = -15000
+    expect(balances.get('sam')!.paid).toBe(15000);
+    expect(balances.get('sam')!.owes).toBe(0);
+    expect(balances.get('sam')!.net).toBe(15000);
+    expect(balances.get('aisha')!.owes).toBe(15000);
+    expect(balances.get('aisha')!.net).toBe(-15000);
+
+    const totalNet = Array.from(balances.values()).reduce((s, e) => s + e.net, 0);
+    expect(Math.abs(totalNet)).toBeLessThan(0.01);
+  });
+
+  it('end-to-end CSV scenario: parasailing + Kabir guest + Sam settlement', () => {
+    // Parasailing expense: Dev paid 150 USD, split equally among 5
+    // Refund: Dev got -30 USD back, split among 4 (Kabir excluded)
+    // Settlement: Sam → Aisha 15000 INR
+    // Sam's row is NOT an expense — it's a settlement only
+    const expenses = [
+      makeExpense({
+        description: 'Parasailing',
+        paidById: 'dev',
+        paidByName: 'Dev',
+        totalAmount: 150,
+        participants: [
+          { userId: 'aisha', userName: 'Aisha', amountOwed: 30 },
+          { userId: 'rohan', userName: 'Rohan', amountOwed: 30 },
+          { userId: 'priya', userName: 'Priya', amountOwed: 30 },
+          { userId: 'dev', userName: 'Dev', amountOwed: 30 },
+          { guestName: "Dev's friend Kabir", amountOwed: 30 },
+        ],
+      }),
+      makeExpense({
+        description: 'Parasailing refund',
+        paidById: 'dev',
+        paidByName: 'Dev',
+        totalAmount: -30,
+        participants: [
+          { userId: 'aisha', userName: 'Aisha', amountOwed: -7.5 },
+          { userId: 'rohan', userName: 'Rohan', amountOwed: -7.5 },
+          { userId: 'priya', userName: 'Priya', amountOwed: -7.5 },
+          { userId: 'dev', userName: 'Dev', amountOwed: -7.5 },
+        ],
+      }),
+    ];
+
+    const settlements = [
+      {
+        id: 'settle-1',
+        date: new Date().toISOString(),
+        fromUserId: 'sam',
+        fromUserName: 'Sam',
+        toUserId: 'aisha',
+        toUserName: 'Aisha',
+        amount: 15000,
+      },
+    ];
+
+    const balances = calculateBalances(expenses, settlements);
+
+    // Dev: paid 150 - 30 = 120, owes 30 - 7.5 = 22.5
+    expect(balances.get('dev')!.paid).toBe(120);
+    expect(balances.get('dev')!.owes).toBe(22.5);
+
+    // Each of Aisha, Rohan, Priya: owe 30 - 7.5 = 22.5 from expenses
+    // Aisha additionally owes 15000 from settlement received
+    expect(balances.get('aisha')!.owes).toBe(15022.5);
+    expect(balances.get('rohan')!.owes).toBe(22.5);
+    expect(balances.get('priya')!.owes).toBe(22.5);
+
+    // Kabir guest owes 30 (not in refund)
+    const kabir = balances.get("guest:Dev's friend Kabir")!;
+    expect(kabir.owes).toBe(30);
+    expect(kabir.net).toBe(-30);
+
+    // Sam: paid 15000 in settlement, owes 0
+    expect(balances.get('sam')!.paid).toBe(15000);
+    expect(balances.get('sam')!.owes).toBe(0);
+    expect(balances.get('sam')!.net).toBe(15000);
+
+    // Aisha: owes 22.5 (parasailing) + 15000 (settlement received) = 15022.5
+    // She paid nothing
+    expect(balances.get('aisha')!.paid).toBe(0);
+    expect(balances.get('aisha')!.owes).toBe(15022.5);
+    expect(balances.get('aisha')!.net).toBe(-15022.5);
+
+    // Conservation: total net must be 0
+    const totalNet = Array.from(balances.values()).reduce((s, e) => s + e.net, 0);
+    expect(Math.abs(totalNet)).toBeLessThan(0.01);
   });
 
   it('settlement does not break conservation of balance', () => {

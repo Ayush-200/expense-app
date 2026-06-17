@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { API_URL } from '../config/api';
-import { Group, CreateGroupData, AddMemberData, GroupMember } from '../types';
+import { Group, CreateGroupData, GroupMember } from '../types';
 
 const api = axios.create({
   baseURL: API_URL,
@@ -34,10 +34,10 @@ export const groupService = {
     return response.data;
   },
 
-  async addMember(groupId: string, data: AddMemberData): Promise<{ message: string; membership: GroupMember }> {
-    const response = await api.post<{ message: string; membership: GroupMember }>(
+  async addMembers(groupId: string, userIds: string[]): Promise<{ message: string; memberships: GroupMember[]; skipped: number }> {
+    const response = await api.post<{ message: string; memberships: GroupMember[]; skipped: number }>(
       `/groups/${groupId}/members`,
-      data
+      { userIds }
     );
     return response.data;
   },

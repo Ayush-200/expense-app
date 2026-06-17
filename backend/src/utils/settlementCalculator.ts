@@ -83,6 +83,7 @@ export interface SettlementForCalculation {
   toUserId: string;
   toUserName: string;
   amount: number;
+  currency?: string;
   note?: string;
 }
 

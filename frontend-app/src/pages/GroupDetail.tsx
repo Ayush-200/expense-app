@@ -4,6 +4,7 @@ import { groupService } from '../services/group.service';
 import { userService } from '../services/user.service';
 import { useAuth } from '../context/AuthContext';
 import { Group, User, GroupMember } from '../types';
+import { formatDate } from '../utils/date';
 import { Layout } from '../components/Layout';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -18,7 +19,7 @@ export function GroupDetail() {
   const [isLoading, setIsLoading] = useState(true);
   const [showAddMember, setShowAddMember] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [selectedUserId, setSelectedUserId] = useState('');
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
@@ -59,18 +60,18 @@ export function GroupDetail() {
     }
   };
 
-  const handleAddMember = async () => {
-    if (!selectedUserId) return;
+  const handleAddMembers = async () => {
+    if (selectedUserIds.length === 0) return;
 
     try {
-      await groupService.addMember(id!, { userId: selectedUserId });
-      setSuccessMessage('Member added successfully');
+      const result = await groupService.addMembers(id!, selectedUserIds);
+      setSuccessMessage(result.message);
       setShowAddMember(false);
-      setSelectedUserId('');
+      setSelectedUserIds([]);
       loadGroup();
       setTimeout(() => setSuccessMessage(''), 3000);
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to add member');
+      setError(err.response?.data?.message || 'Failed to add members');
     }
   };
 
@@ -163,6 +164,9 @@ export function GroupDetail() {
             <Link to={`/balances?groupId=${group.id}`}>
               <Button variant="secondary">Balances</Button>
             </Link>
+            <Link to={`/events?groupId=${group.id}`}>
+              <Button variant="secondary">Event Timeline</Button>
+            </Link>
             {!isCreator && (
               <Button variant="danger" onClick={handleLeaveGroup}>
                 Leave Group
@@ -189,29 +193,49 @@ export function GroupDetail() {
 
         {showAddMember && (
           <div className="mb-4 p-4 bg-gray-800 rounded-lg border border-gray-700">
-            <h4 className="text-white font-medium mb-3">Add New Member</h4>
+            <h4 className="text-white font-medium mb-3">Add Members</h4>
             {availableUsers.length === 0 ? (
               <p className="text-gray-400 text-sm">All users are already members</p>
             ) : (
-              <div className="flex gap-2">
-                <select
-                  className="flex-1 px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  value={selectedUserId}
-                  onChange={(e) => setSelectedUserId(e.target.value)}
-                >
-                  <option value="">Select a user...</option>
-                  {availableUsers.map((user) => (
-                    <option key={user.id} value={user.id}>
-                      {user.name} ({user.email})
-                    </option>
-                  ))}
-                </select>
-                <Button variant="primary" onClick={handleAddMember} disabled={!selectedUserId}>
-                  Add
-                </Button>
-                <Button variant="secondary" onClick={() => setShowAddMember(false)}>
-                  Cancel
-                </Button>
+              <div>
+                <div className="max-h-48 overflow-y-auto space-y-1 mb-3 border border-gray-700 rounded p-2 bg-gray-900">
+                  {availableUsers.map((user) => {
+                    const checked = selectedUserIds.includes(user.id);
+                    return (
+                      <label
+                        key={user.id}
+                        className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-sm ${
+                          checked ? 'bg-primary-900/40 text-white' : 'text-gray-300 hover:bg-gray-800'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setSelectedUserIds((prev) =>
+                              checked ? prev.filter((id) => id !== user.id) : [...prev, user.id]
+                            );
+                          }}
+                          className="rounded border-gray-600"
+                        />
+                        {user.name} <span className="text-gray-500">({user.email})</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">
+                    {selectedUserIds.length} selected
+                  </span>
+                  <div className="flex gap-2">
+                    <Button variant="primary" onClick={handleAddMembers} disabled={selectedUserIds.length === 0}>
+                      Add Selected
+                    </Button>
+                    <Button variant="secondary" onClick={() => setShowAddMember(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -270,11 +294,11 @@ export function GroupDetail() {
                   </div>
                   <div className="text-right text-sm">
                     <p className="text-gray-400">
-                      Joined: {new Date(record.joinedAt).toLocaleDateString()}
+                      Joined: {formatDate(record.joinedAt)}
                     </p>
                     {record.leftAt && (
                       <p className="text-red-400">
-                        Left: {new Date(record.leftAt).toLocaleDateString()}
+                        Left: {formatDate(record.leftAt)}
                       </p>
                     )}
                     {!record.leftAt && (

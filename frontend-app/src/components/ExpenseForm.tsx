@@ -34,7 +34,7 @@ export function ExpenseForm({
   const [date, setDate] = useState(
     initialData
       ? new Date(initialData.date).toISOString().split('T')[0]
-      : new Date().toISOString().split('T')[0]
+      : new Date().toLocaleDateString('en-CA')
   );
   const [participants, setParticipants] = useState<ParticipantRow[]>([]);
   const [error, setError] = useState('');

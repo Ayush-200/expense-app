@@ -1,693 +1,738 @@
-import { useState, useEffect } from 'react';
-import { importService, ImportReport, GroupMember, Resolution } from '../services/import.service';
-import { Button } from './Button';
+import React, { useState, useRef, useMemo } from 'react';
+import {
+  importService,
+  ImportReport,
+  Anomaly,
+  ResolutionMap,
+  CSVRow,
+} from '../services/import.service';
 
 interface ImportExpensesModalProps {
   groupId: string;
+  groupMembers: Array<{ id: string; name: string; email: string }>;
   onClose: () => void;
   onSuccess: () => void;
 }
 
+type Step = 'upload' | 'review' | 'confirming' | 'result';
+
+const SEVERITY_COLORS: Record<string, string> = {
+  ERROR: 'text-red-400 bg-red-900/20 border-red-800',
+  WARNING: 'text-yellow-400 bg-yellow-900/20 border-yellow-800',
+  INFO: 'text-blue-400 bg-blue-900/20 border-blue-800',
+};
+
+const ANOMALY_LABELS: Record<string, string> = {
+  DUPLICATE_EXPENSE: 'Duplicate Expense',
+  INCONSISTENT_NAME: 'Inconsistent Name',
+  MISSING_PAYER: 'Missing Payer',
+  SETTLEMENT_AS_EXPENSE: 'Settlement Detected',
+  MISSING_CURRENCY: 'Missing Currency',
+  CURRENCY_CONVERSION: 'Currency Conversion',
+  NEGATIVE_AMOUNT: 'Negative Amount (Refund)',
+  INVALID_DATE: 'Invalid Date',
+  AMBIGUOUS_DATE: 'Ambiguous Date',
+  SPLIT_INCONSISTENCY: 'Split Inconsistency',
+  INVALID_MEMBER_FOR_DATE: 'Invalid Member for Date',
+  GUEST_PARTICIPANT: 'Guest Participant',
+  PAYER_NOT_MEMBER: 'Payer Not in Group',
+  PERCENTAGE_MISMATCH: 'Percentage Mismatch',
+};
+
 export function ImportExpensesModal({
   groupId,
+  groupMembers,
   onClose,
   onSuccess,
 }: ImportExpensesModalProps) {
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<Step>('upload');
   const [file, setFile] = useState<File | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [report, setReport] = useState<ImportReport | null>(null);
-  const [members, setMembers] = useState<GroupMember[]>([]);
   const [error, setError] = useState('');
-  
-  // Resolutions state: key is rowNumber
-  const [resolutions, setResolutions] = useState<Record<number, Resolution>>({});
-  const [selectedRowNumber, setSelectedRowNumber] = useState<number | null>(null);
-  const [filterType, setFilterType] = useState<'ALL' | 'ERRORS' | 'WARNINGS' | 'PERFECT'>('ALL');
+  const [resolutions, setResolutions] = useState<ResolutionMap>({});
+  const [resultMessage, setResultMessage] = useState('');
+  const [exchangeRate, setExchangeRate] = useState('83');
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const rowsRequiringAction = useMemo(() => {
+    if (!report) return [];
+    return report.details.filter(
+      (d) => d.anomalies.some((a) => !a.canAutoFix)
+    );
+  }, [report]);
+
+  const groupedAnomalies = useMemo(() => {
+    if (!report) return {};
+    const grouped: Record<string, Anomaly[]> = {};
+    for (const detail of report.details) {
+      for (const anomaly of detail.anomalies) {
+        if (!grouped[anomaly.anomalyType]) grouped[anomaly.anomalyType] = [];
+        grouped[anomaly.anomalyType].push(anomaly);
+      }
+    }
+    return grouped;
+  }, [report]);
+
+  const hasUnresolvedErrors = useMemo(() => {
+    if (!report) return false;
+    return report.details.some(
+      (d) =>
+        d.anomalies.some((a) => a.severity === 'ERROR' && !a.canAutoFix) &&
+        !resolutions[d.rowNumber]
+    );
+  }, [report, resolutions]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+    const f = e.target.files?.[0];
+    if (f) {
+      if (!f.name.endsWith('.csv')) {
+        setError('Please select a CSV file');
+        return;
+      }
+      setFile(f);
       setError('');
-      setReport(null);
-    }
-  };
-
-  const handleDownloadTemplate = async () => {
-    try {
-      const blob = await importService.downloadTemplate();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'expense_import_template.csv';
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-    } catch (err: any) {
-      setError('Failed to download template');
     }
   };
 
   const handleUpload = async () => {
     if (!file) {
-      setError('Please select a file');
+      setError('Please select a CSV file');
       return;
     }
-
-    setIsProcessing(true);
     setError('');
+    setUploading(true);
 
     try {
-      const resReport = await importService.importExpenses(groupId, file);
-      setReport(resReport);
-      
-      // Fetch job details to get the members list and initial resolutions
-      const details = await importService.getImportJob(resReport.importJobId);
-      setMembers(details.members);
+      const rate = parseFloat(exchangeRate) || undefined;
+      const result = await importService.uploadAndValidate(groupId, file, rate);
+      setReport(result);
+      setResolutions({});
 
-      // Initialize default resolutions based on anomalies
-      const initialResolutions: Record<number, Resolution> = {};
-      resReport.details.forEach(({ rowNumber, anomalies, rowData }) => {
-        const rowRes: Resolution = {
-          payerId: undefined,
-          date: undefined,
-          currency: rowData.currency || 'INR',
-          exchangeRate: rowData.currency && rowData.currency !== 'INR' ? 83.00 : 1.0,
-          isSettlement: undefined,
-          payeeId: undefined,
-          skip: false,
-        };
-
-        anomalies.forEach((a) => {
-          if (a.anomalyType === 'DUPLICATE_EXPENSE') {
-            // Default duplicate resolution: skip it to prevent double insertion
-            rowRes.skip = true;
-          }
-          if (a.anomalyType === 'SETTLEMENT_AS_EXPENSE') {
-            rowRes.isSettlement = true;
-            // Guess payeeId as first participant if it matches a member
-            if (rowData.participants) {
-              const firstPart = rowData.participants.split(',')[0].trim().toLowerCase();
-              const match = details.members.find(
-                (m) => m.name.toLowerCase() === firstPart || m.email.toLowerCase() === firstPart
-              );
-              if (match) rowRes.payeeId = match.id;
-            }
-          }
-          if (a.anomalyType === 'MISSING_PAYER') {
-            // Must be resolved by user
-          }
-          if (a.anomalyType === 'CURRENCY_CONVERSION') {
-            rowRes.exchangeRate = 83.00;
-          }
-        });
-
-        initialResolutions[rowNumber] = rowRes;
-      });
-
-      setResolutions(initialResolutions);
-
-      if (resReport.details.length > 0) {
-        setSelectedRowNumber(resReport.details[0].rowNumber);
+      if (result.status === 'COMPLETED') {
+        setStep('result');
+        setResultMessage(result.summary);
+      } else if (result.status === 'REQUIRES_APPROVAL') {
+        setStep('review');
+      } else {
+        setStep('result');
+        setResultMessage(`Import failed: ${result.summary}`);
       }
-
-      setStep(2);
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Import validation failed');
+      const msg = err.response?.data?.message || err.message || 'Upload failed';
+      setError(msg);
     } finally {
-      setIsProcessing(false);
+      setUploading(false);
     }
   };
 
-  const handleConfirmImport = async () => {
+  const handleConfirm = async () => {
     if (!report) return;
-
-    setIsProcessing(true);
-    setError('');
+    setStep('confirming');
 
     try {
-      await importService.confirmImport(report.importJobId, resolutions);
-      setStep(3);
-      setTimeout(() => {
-        onSuccess();
-      }, 1500);
+      const result = await importService.confirmImport(report.importJobId, resolutions);
+      if (result.job) {
+        setReport({
+          ...report,
+          status: result.job.status,
+          processedRows: result.job.processedRows,
+          successfulRows: result.job.successfulRows,
+          failedRows: result.job.failedRows,
+        });
+      }
+      setResultMessage('Import completed successfully');
+      setStep('result');
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to confirm import');
-    } finally {
-      setIsProcessing(false);
+      const msg = err.response?.data?.message || err.message || 'Confirmation failed';
+      setError(msg);
+      setStep('review');
     }
   };
 
-  // Helper to check if a row has unconfirmed blocker errors
-  const isRowBlocked = (rowNumber: number, rowAnomalies: any[], rowData: any) => {
-    const res = resolutions[rowNumber];
-    if (!res) return false;
-    if (res.skip) return false;
-
-    return rowAnomalies.some((a) => {
-      if (a.severity === 'ERROR') {
-        if (a.anomalyType === 'MISSING_PAYER' && !res.payerId) return true;
-        if (a.anomalyType === 'INVALID_DATE' && !res.date) return true;
-        return true;
-      }
-      return false;
-    });
+  const handleClose = () => {
+    if (step === 'result') onSuccess();
+    onClose();
   };
 
-  // Compute total blockers in report
-  const getBlockersCount = () => {
-    if (!report) return 0;
-    return report.details.filter((d) => isRowBlocked(d.rowNumber, d.anomalies, d.rowData)).length;
-  };
-
-  // Filtered details
-  const getFilteredDetails = () => {
-    if (!report) return [];
-    return report.details.filter(({ rowNumber, anomalies }) => {
-      const res = resolutions[rowNumber];
-      const hasErrors = anomalies.some(a => a.severity === 'ERROR');
-      const hasWarnings = anomalies.some(a => a.severity === 'WARNING');
-      const hasInfo = anomalies.some(a => a.severity === 'INFO');
-
-      if (filterType === 'ERRORS') return hasErrors && (!res || !res.skip);
-      if (filterType === 'WARNINGS') return hasWarnings && (!res || !res.skip);
-      if (filterType === 'PERFECT') return anomalies.length === 0 && (!res || !res.skip);
-      return true; // ALL
-    });
-  };
-
-  const activeRowDetail = report?.details.find(d => d.rowNumber === selectedRowNumber);
-  const activeRowResolution = selectedRowNumber ? resolutions[selectedRowNumber] : null;
-
-  const updateResolution = (rowNum: number, fields: Partial<Resolution>) => {
-    setResolutions(prev => ({
+  const setResolution = (
+    rowNum: number,
+    partial: Partial<ResolutionMap[number]>
+  ) => {
+    setResolutions((prev) => ({
       ...prev,
-      [rowNum]: {
-        ...prev[rowNum],
-        ...fields
-      }
+      [rowNum]: { ...(prev[rowNum] || {}), ...partial },
     }));
   };
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
+  const renderUpload = () => (
+    <div className="space-y-4">
+      <p className="text-gray-400 text-sm">
+        Upload a CSV file with expense data.{" "}
+        <a
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            importService.downloadTemplate().then((blob) => {
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'expense_import_template.csv';
+              a.click();
+              URL.revokeObjectURL(url);
+            });
+          }}
+          className="text-primary-500 hover:text-primary-400 underline"
+        >
+          Download template
+        </a>
+      </p>
+
+      <div className="flex items-center gap-2 bg-gray-800 rounded p-3">
+        <label className="text-xs text-gray-400 whitespace-nowrap">USD Rate:</label>
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          value={exchangeRate}
+          onChange={(e) => setExchangeRate(e.target.value)}
+          className="w-24 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm text-white text-center"
+        />
+        <span className="text-xs text-gray-500">1 USD =</span>
+        <span className="text-xs text-white font-medium">{exchangeRate || '83'} INR</span>
+      </div>
+
       <div
-        className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden shadow-2xl animate-fade-in"
-        onClick={(e) => e.stopPropagation()}
+        className="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center cursor-pointer hover:border-gray-500"
+        onClick={() => fileRef.current?.click()}
       >
-        {/* Header */}
-        <div className="bg-gray-950 px-6 py-4 flex justify-between items-center border-b border-gray-800">
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".csv"
+          onChange={handleFileChange}
+          className="hidden"
+        />
+        {file ? (
           <div>
-            <h3 className="text-white text-lg font-semibold tracking-wide">Bulk CSV Import System</h3>
-            <p className="text-gray-500 text-xs mt-0.5">Splitwise-like intelligent transaction parsing</p>
+            <p className="text-white font-medium">{file.name}</p>
+            <p className="text-gray-500 text-xs mt-1">
+              {(file.size / 1024).toFixed(1)} KB
+            </p>
           </div>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-white text-2xl transition-colors leading-none"
-          >
-            ×
-          </button>
-        </div>
-
-        {/* Step Indicator */}
-        <div className="bg-gray-950/40 px-6 py-3 border-b border-gray-800 flex items-center justify-center gap-8 text-xs font-semibold tracking-wider">
-          <div className={`flex items-center gap-2 ${step === 1 ? 'text-primary-400' : 'text-gray-500'}`}>
-            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${step === 1 ? 'bg-primary-500/20 border border-primary-500' : 'bg-gray-800 border border-gray-700'}`}>1</span>
-            UPLOAD CSV
+        ) : (
+          <div>
+            <p className="text-gray-400">Click to select a CSV file</p>
+            <p className="text-gray-600 text-xs mt-1">.csv files only</p>
           </div>
-          <div className="w-12 h-px bg-gray-800" />
-          <div className={`flex items-center gap-2 ${step === 2 ? 'text-primary-400' : 'text-gray-500'}`}>
-            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${step === 2 ? 'bg-primary-500/20 border border-primary-500' : 'bg-gray-800 border border-gray-700'}`}>2</span>
-            RESOLVE ANOMALIES
+        )}
+      </div>
+
+      <div className="flex justify-end gap-2">
+        <button
+          onClick={onClose}
+          className="px-3 py-2 text-sm bg-gray-800 text-gray-200 rounded hover:bg-gray-700"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleUpload}
+          disabled={!file || uploading}
+          className="px-4 py-2 text-sm bg-primary-500 text-white rounded hover:bg-primary-400 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
+        >
+          {uploading && (
+            <span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+          )}
+          {uploading ? 'Validating...' : 'Upload & Validate'}
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderAnomalyBadge = (anomaly: Anomaly) => (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border ${SEVERITY_COLORS[anomaly.severity]}`}
+    >
+      {anomaly.severity === 'ERROR' ? '✕' : anomaly.severity === 'WARNING' ? '⚠' : 'ℹ'}
+      {ANOMALY_LABELS[anomaly.anomalyType] || anomaly.anomalyType}
+    </span>
+  );
+
+  const renderResolutionControl = (anomaly: Anomaly) => {
+    const rowNum = anomaly.rowNumber;
+
+    switch (anomaly.anomalyType) {
+      case 'MISSING_PAYER':
+        return (
+          <div className="mt-2">
+            <label className="text-xs text-gray-400 block mb-1">Select payer:</label>
+            <select
+              value={resolutions[rowNum]?.payerId || ''}
+              onChange={(e) => setResolution(rowNum, { payerId: e.target.value })}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white"
+            >
+              <option value="">-- Select --</option>
+              {groupMembers.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.email})
+                </option>
+              ))}
+            </select>
           </div>
-          <div className="w-12 h-px bg-gray-800" />
-          <div className={`flex items-center gap-2 ${step === 3 ? 'text-primary-400' : 'text-gray-500'}`}>
-            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${step === 3 ? 'bg-primary-500/20 border border-primary-500' : 'bg-gray-800 border border-gray-700'}`}>3</span>
-            IMPORT SUCCESS
+        );
+
+      case 'INVALID_DATE':
+        return (
+          <div className="mt-2">
+            <label className="text-xs text-gray-400 block mb-1">Enter valid date (YYYY-MM-DD):</label>
+            <input
+              type="date"
+              value={resolutions[rowNum]?.date || ''}
+              onChange={(e) => setResolution(rowNum, { date: e.target.value })}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white"
+            />
           </div>
-        </div>
+        );
 
-        {/* Step 1: Upload */}
-        {step === 1 && (
-          <div className="flex-1 overflow-y-auto p-6 space-y-6">
-            <div className="grid md:grid-cols-2 gap-6">
-              <div className="space-y-4">
-                <div className="bg-gray-800/40 border border-gray-800/80 rounded-xl p-5 shadow-inner">
-                  <h4 className="text-white font-medium mb-3 flex items-center gap-2">
-                    <span className="text-primary-400">📋</span> CSV Import Guidelines
-                  </h4>
-                  <p className="text-gray-400 text-sm mb-4">
-                    Our intelligent import system checks for 12 data quality issues (duplicates, ambiguous dates, currency conversions, timeline membership violations, settlements, and name aliases) and helps you resolve them before importing.
-                  </p>
-                  <ol className="text-gray-400 text-sm space-y-2 list-decimal list-inside">
-                    <li>Download the official template below.</li>
-                    <li>Add dates, descriptions, payer email or name, total amounts, and participants.</li>
-                    <li>Select splits type and participant shares if required.</li>
-                    <li>Upload the CSV to scan for anomalies.</li>
-                  </ol>
-                </div>
-
-                <div>
-                  <button
-                    onClick={handleDownloadTemplate}
-                    className="text-primary-400 hover:text-primary-300 text-sm flex items-center gap-2 font-semibold transition-colors"
-                  >
-                    📥 Download Standard CSV Template
-                  </button>
-                </div>
-              </div>
-
-              <div className="border-2 border-dashed border-gray-800 rounded-xl flex flex-col justify-center items-center p-8 bg-gray-950/20 hover:border-gray-700 transition-colors">
-                <span className="text-4xl mb-3">📁</span>
-                <label className="block text-sm text-gray-400 font-medium mb-3">Select Expense CSV File</label>
-                <input
-                  type="file"
-                  accept=".csv"
-                  onChange={handleFileChange}
-                  className="hidden"
-                  id="csv-file-upload"
-                />
-                <label
-                  htmlFor="csv-file-upload"
-                  className="px-4 py-2 bg-gray-800 border border-gray-700 hover:bg-gray-700 text-white rounded-lg cursor-pointer text-sm font-semibold transition-colors shadow-sm"
-                >
-                  Choose File
-                </label>
-                {file && (
-                  <div className="mt-4 text-center">
-                    <p className="text-sm text-white font-medium">{file.name}</p>
-                    <p className="text-xs text-gray-500 mt-1">{Math.round(file.size / 1024)} KB</p>
-                  </div>
-                )}
-              </div>
+      case 'AMBIGUOUS_DATE':
+        return (
+          <div className="mt-2">
+            <p className="text-xs text-gray-400 mb-1">
+              Interpreted as:{" "}
+              <span className="text-white">
+                {anomaly.suggestedValue || 'unknown'}
+              </span>
+            </p>
+            <div className="flex gap-2">
+              <label className="text-xs text-gray-400 block mb-1">Override date (YYYY-MM-DD):</label>
+              <input
+                type="date"
+                value={resolutions[rowNum]?.date || anomaly.suggestedValue || ''}
+                onChange={(e) => setResolution(rowNum, { date: e.target.value })}
+                className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white"
+              />
             </div>
+          </div>
+        );
 
-            {error && (
-              <div className="p-3 bg-red-950/30 text-red-400 border border-red-900/50 rounded-xl text-sm">
-                ❌ {error}
+      case 'SETTLEMENT_AS_EXPENSE':
+        return (
+          <div className="mt-2 flex items-center gap-3">
+            <label className="text-xs text-gray-400">
+              <input
+                type="checkbox"
+                checked={resolutions[rowNum]?.isSettlement ?? false}
+                onChange={(e) =>
+                  setResolution(rowNum, { isSettlement: e.target.checked })
+                }
+                className="mr-1"
+              />
+              Treat as settlement
+            </label>
+            {resolutions[rowNum]?.isSettlement && (
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400">Payee:</label>
+                <select
+                  value={resolutions[rowNum]?.payeeId || ''}
+                  onChange={(e) => setResolution(rowNum, { payeeId: e.target.value })}
+                  className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                >
+                  <option value="">-- Select --</option>
+                  {groupMembers.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
               </div>
             )}
+          </div>
+        );
 
-            <div className="pt-4 border-t border-gray-800 flex justify-end gap-3">
-              <Button type="button" onClick={onClose} variant="secondary">
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                onClick={handleUpload}
-                disabled={!file || isProcessing}
-                variant="primary"
-              >
-                {isProcessing ? 'Processing CSV...' : 'Scan & Validate CSV'}
-              </Button>
+      case 'DUPLICATE_EXPENSE':
+        return (
+          <div className="mt-2 flex items-center gap-3">
+            <label className="text-xs text-gray-400">
+              <input
+                type="checkbox"
+                checked={resolutions[rowNum]?.skip ?? false}
+                onChange={(e) =>
+                  setResolution(rowNum, { skip: e.target.checked })
+                }
+                className="mr-1"
+              />
+              Skip this duplicate
+            </label>
+            <label className="text-xs text-gray-400">
+              <input
+                type="checkbox"
+                checked={resolutions[rowNum]?.confirmedDuplicate ?? false}
+                onChange={(e) =>
+                  setResolution(rowNum, { confirmedDuplicate: e.target.checked, skip: false })
+                }
+                className="mr-1"
+              />
+              Import anyway (confirmed not duplicate)
+            </label>
+          </div>
+        );
+
+      case 'INCONSISTENT_NAME':
+        return (
+          <div className="mt-2">
+            <label className="text-xs text-gray-400 block mb-1">
+              Original: <span className="text-white">{anomaly.originalValue}</span>
+            </label>
+            <label className="text-xs text-gray-400 block mb-1">
+              Suggested: <span className="text-white">{anomaly.suggestedValue}</span>
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={resolutions[rowNum]?.payerId || ''}
+                placeholder="Or type a custom name..."
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const found = groupMembers.find(
+                    (m) => m.id === val || m.name.toLowerCase() === val.toLowerCase()
+                  );
+                  if (found) {
+                    setResolution(rowNum, { payerId: found.id });
+                  } else {
+                    setResolution(rowNum, { payerId: val });
+                  }
+                }}
+                className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white"
+              />
+            </div>
+          </div>
+        );
+
+      case 'PAYER_NOT_MEMBER':
+        return (
+          <div className="mt-2">
+            <label className="text-xs text-gray-400 block mb-1">
+              Payer not found in group. Select the correct payer:
+            </label>
+            <select
+              value={resolutions[rowNum]?.payerId || ''}
+              onChange={(e) => setResolution(rowNum, { payerId: e.target.value })}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white"
+            >
+              <option value="">-- Select --</option>
+              {groupMembers.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.email})
+                </option>
+              ))}
+            </select>
+          </div>
+        );
+
+      case 'PERCENTAGE_MISMATCH':
+        return (
+          <div className="mt-2 p-2 bg-yellow-900/20 border border-yellow-700/40 rounded">
+            <p className="text-xs text-yellow-400 mb-1">{anomaly.message}</p>
+            {anomaly.suggestedValue && (
+              <p className="text-xs text-gray-400">
+                Suggested: <span className="text-white">{anomaly.suggestedValue}</span>
+              </p>
+            )}
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  const renderSplitAdjustment = (rowNum: number, rowData: CSVRow) => {
+    const splitType = (rowData.splitType || 'EQUAL').toUpperCase();
+    if (splitType !== 'PERCENTAGE' && splitType !== 'UNEQUAL') return null;
+
+    const partsStr = rowData.participants || '';
+    const sep = partsStr.includes(',') ? ',' : ';';
+    const rawParts: string[] = partsStr.split(sep).map((p: string) => p.trim()).filter(Boolean);
+    const sharesSep = (rowData.participantShares || '').includes(',') ? ',' : ';';
+    const rawShares: string[] = (rowData.participantShares || '').split(sharesSep).map((s: string) => s.trim()).filter(Boolean);
+
+    // Parse existing resolution override if any
+    const resolvedShares = resolutions[rowNum]?.participantShares;
+    const currentValues: number[] = rawShares.map((s: string) => {
+      const num = parseFloat(s.replace(/^[A-Za-z\s]+/, '').trim());
+      return isNaN(num) ? 0 : num;
+    });
+    if (resolvedShares) {
+      const resolvedVals = resolvedShares.split(';').map((v: string) => parseFloat(v.trim())).filter((v: number) => !isNaN(v));
+      if (resolvedVals.length === rawParts.length) {
+        // Use resolved values if count matches
+        resolvedVals.forEach((v, i) => { currentValues[i] = v; });
+      }
+    }
+
+    const isPercentage = splitType === 'PERCENTAGE';
+    const totalAmount = parseFloat(rowData.amount) || 0;
+    const total = currentValues.reduce((s, v) => s + v, 0);
+
+    const updateValue = (idx: number, newVal: number) => {
+      const updated = [...currentValues];
+      updated[idx] = newVal;
+      resolutions[rowNum] = { ...(resolutions[rowNum] || {}), participantShares: updated.join(';') };
+      // Force re-render by updating resolutions state
+      setResolutions({ ...resolutions });
+    };
+
+    return (
+      <div className="mt-3 p-3 bg-gray-850 border border-gray-700 rounded">
+        <div className="flex justify-between items-center mb-2">
+          <span className="text-xs font-semibold text-gray-300">
+            {isPercentage ? 'Percentage Split' : 'Unequal Split (Exact Amounts)'}
+          </span>
+          <span className={`text-xs font-mono ${Math.abs(total - (isPercentage ? 100 : totalAmount)) < 0.01 ? 'text-green-400' : 'text-red-400'}`}>
+            {isPercentage ? `Total: ${total.toFixed(1)}%` : `Total: ${total.toFixed(2)} / ${totalAmount.toFixed(2)}`}
+          </span>
+        </div>
+        <div className="space-y-1.5">
+          {rawParts.map((part, idx) => (
+            <div key={idx} className="flex items-center gap-2">
+              <span className="text-xs text-gray-400 w-24 truncate">{part}</span>
+              <input
+                type="number"
+                step={isPercentage ? '0.1' : '0.01'}
+                min="0"
+                value={currentValues[idx] || ''}
+                onChange={(e) => updateValue(idx, parseFloat(e.target.value) || 0)}
+                className="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white w-24"
+              />
+              <span className="text-xs text-gray-500 w-8">{isPercentage ? '%' : '₹'}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const renderReview = () => {
+    if (!report) return null;
+
+    const anomSummary = report.anomalies;
+
+    return (
+      <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-gray-800 rounded p-3 text-center">
+            <p className="text-2xl font-bold text-white">{report.totalRows}</p>
+            <p className="text-xs text-gray-400">Total Rows</p>
+          </div>
+          <div className="bg-gray-800 rounded p-3 text-center">
+            <p className="text-2xl font-bold text-white">{report.processedRows}</p>
+            <p className="text-xs text-gray-400">Processed</p>
+          </div>
+        </div>
+
+        {(anomSummary.errors > 0 || anomSummary.warnings > 0 || anomSummary.info > 0) && (
+          <div className="bg-gray-800 rounded p-3">
+            <p className="text-sm font-semibold text-white mb-2">Anomalies Detected</p>
+            <div className="flex gap-3 text-sm">
+              {anomSummary.errors > 0 && (
+                <span className="text-red-400">{anomSummary.errors} error(s)</span>
+              )}
+              {anomSummary.warnings > 0 && (
+                <span className="text-yellow-400">{anomSummary.warnings} warning(s)</span>
+              )}
+              {anomSummary.info > 0 && (
+                <span className="text-blue-400">{anomSummary.info} info</span>
+              )}
             </div>
           </div>
         )}
 
-        {/* Step 2: Review & Resolve */}
-        {step === 2 && report && (
-          <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-            {/* Left: Rows List */}
-            <div className="w-full md:w-2/5 border-r border-gray-800 flex flex-col overflow-hidden bg-gray-950/20">
-              {/* Report Summary Cards */}
-              <div className="p-4 bg-gray-950/50 border-b border-gray-800 space-y-3">
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <div className="bg-gray-900 border border-gray-800 p-2 rounded-lg">
-                    <p className="text-gray-500 text-[9px] font-bold uppercase tracking-wider">Total Rows</p>
-                    <p className="text-white text-base font-bold mt-0.5">{report.totalRows}</p>
+        {Object.keys(groupedAnomalies).length > 0 && (
+          <div className="bg-gray-800 rounded p-3">
+            <p className="text-sm font-semibold text-white mb-2">By Type</p>
+            <div className="space-y-1 max-h-32 overflow-y-auto">
+              {Object.entries(groupedAnomalies)
+                .sort(([, a], [, b]) => b.length - a.length)
+                .map(([type, items]) => (
+                  <div key={type} className="flex justify-between text-xs">
+                    <span className="text-gray-300">
+                      {ANOMALY_LABELS[type] || type}
+                    </span>
+                    <span className="text-gray-400">{items.length}</span>
                   </div>
-                  <div className="bg-amber-900/10 border border-amber-900/30 p-2 rounded-lg">
-                    <p className="text-amber-500 text-[9px] font-bold uppercase tracking-wider">Warnings</p>
-                    <p className="text-amber-400 text-base font-bold mt-0.5">{report.anomalies.warnings}</p>
-                  </div>
-                  <div className="bg-red-900/10 border border-red-900/30 p-2 rounded-lg">
-                    <p className="text-red-500 text-[9px] font-bold uppercase tracking-wider">Blockers</p>
-                    <p className="text-red-400 text-base font-bold mt-0.5">{getBlockersCount()}</p>
-                  </div>
-                </div>
+                ))}
+            </div>
+          </div>
+        )}
 
-                {/* Filter and Search */}
-                <div className="flex gap-1 bg-gray-900/80 p-0.5 rounded-lg border border-gray-850">
-                  {(['ALL', 'ERRORS', 'WARNINGS', 'PERFECT'] as const).map((type) => (
-                    <button
-                      key={type}
-                      onClick={() => setFilterType(type)}
-                      className={`flex-1 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-all ${filterType === type ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30' : 'text-gray-400 hover:text-white'}`}
-                    >
-                      {type}
-                    </button>
-                  ))}
-                </div>
-              </div>
+        <div className="text-sm text-gray-300 bg-gray-800/50 rounded p-2">
+          {report.summary}
+        </div>
 
-              {/* Rows List scroll container */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                {getFilteredDetails().map(({ rowNumber, anomalies, rowData }) => {
-                  const res = resolutions[rowNumber];
-                  const isSelected = rowNumber === selectedRowNumber;
-                  const isSkipped = res?.skip;
-                  const isBlocked = isRowBlocked(rowNumber, anomalies, rowData);
-
-                  // Compute row color status
-                  let borderClass = 'border-gray-800 hover:border-gray-700 bg-gray-900/30';
-                  if (isSelected) borderClass = 'border-primary-500 bg-primary-500/5';
-                  else if (isSkipped) borderClass = 'border-gray-850 opacity-45 bg-gray-900/10';
-                  else if (isBlocked) borderClass = 'border-red-900 bg-red-950/5';
-                  else if (anomalies.some(a => a.severity === 'WARNING')) borderClass = 'border-amber-900/60 bg-amber-950/5';
-                  else if (anomalies.some(a => a.severity === 'INFO')) borderClass = 'border-blue-900/60 bg-blue-950/5';
-
-                  return (
-                    <div
-                      key={rowNumber}
-                      onClick={() => setSelectedRowNumber(rowNumber)}
-                      className={`p-3 border rounded-xl cursor-pointer transition-all ${borderClass}`}
-                    >
-                      <div className="flex justify-between items-start">
-                        <div className="flex items-center gap-2">
-                          <span className="text-gray-500 text-[10px] font-mono font-bold bg-gray-950/50 px-1.5 py-0.5 rounded border border-gray-850">
-                            Row {rowNumber}
-                          </span>
-                          {isSkipped && <span className="text-[9px] font-bold uppercase bg-gray-800 text-gray-500 px-1.5 py-0.5 rounded">SKIPPED</span>}
-                          {isBlocked && <span className="text-[9px] font-bold uppercase bg-red-950 text-red-400 px-1.5 py-0.5 rounded border border-red-900/30">BLOCKER</span>}
-                        </div>
-                        <p className={`font-semibold text-sm ${isSkipped ? 'text-gray-600 line-through' : 'text-white'}`}>
-                          {res?.currency !== 'INR' ? `${res?.currency} ` : '₹'}
-                          {rowData.amount}
-                        </p>
-                      </div>
-                      <p className={`text-xs mt-1 font-medium truncate ${isSkipped ? 'text-gray-600 line-through' : 'text-gray-300'}`}>
-                        {rowData.description || '(No Description)'}
-                      </p>
-                      <div className="flex items-center justify-between text-[10px] text-gray-500 mt-2">
-                        <p>Paid by: {res?.payerId ? members.find(m=>m.id===res.payerId)?.name : rowData.paidBy || 'Missing'}</p>
-                        <p>{rowData.date}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-                {getFilteredDetails().length === 0 && (
-                  <div className="text-center py-8 text-gray-500 text-sm">
-                    No rows match this filter.
-                  </div>
-                )}
-              </div>
+        {rowsRequiringAction.map((detail) => (
+          <div
+            key={detail.rowNumber}
+            className="bg-gray-800 rounded p-3 border border-gray-700"
+          >
+            <div className="flex justify-between items-start mb-2">
+              <span className="text-xs text-gray-500 font-mono">
+                Row {detail.rowNumber}
+              </span>
+              <span className="text-xs text-gray-500">
+                {detail.rowData.description || '(no description)'} · ₹
+                {detail.rowData.amount}
+              </span>
             </div>
 
-            {/* Right: Selected Row Resolution Detail */}
-            <div className="flex-1 overflow-y-auto p-6 flex flex-col justify-between bg-gray-900/10">
-              {activeRowDetail && activeRowResolution ? (
-                <div className="space-y-6">
-                  {/* Row general info banner */}
-                  <div className="bg-gray-950 p-4 border border-gray-850 rounded-xl flex justify-between items-center">
-                    <div>
-                      <h4 className="text-white font-semibold text-base flex items-center gap-2">
-                        Row {activeRowDetail.rowNumber}: {activeRowDetail.rowData.description}
-                      </h4>
-                      <p className="text-gray-400 text-xs mt-1">
-                        Payer: <span className="text-gray-300 font-medium">{activeRowDetail.rowData.paidBy || 'None'}</span> · 
-                        Participants: <span className="text-gray-300 font-medium">{activeRowDetail.rowData.participants || 'None'}</span>
+            <div className="flex flex-wrap gap-1 mb-2">
+              {detail.anomalies.map((a, i) => (
+                <div key={i} className="relative group">
+                  {renderAnomalyBadge(a)}
+                  <div className="absolute z-10 hidden group-hover:block bg-gray-700 text-white text-xs rounded p-2 w-64 mt-1 shadow-lg">
+                    {a.message}
+                    {a.originalValue && (
+                      <p className="text-gray-400 mt-1">
+                        Original: <span className="text-white">{a.originalValue}</span>
                       </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-gray-400 select-none">
-                        <input
-                          type="checkbox"
-                          checked={!!activeRowResolution.skip}
-                          onChange={(e) => updateResolution(activeRowDetail.rowNumber, { skip: e.target.checked })}
-                          className="w-4 h-4 rounded bg-gray-800 border-gray-700 text-primary-500 focus:ring-primary-500 focus:ring-offset-gray-900"
-                        />
-                        Skip Row
-                      </label>
-                    </div>
-                  </div>
-
-                  {/* Anomalies and Resolutions forms */}
-                  <div className="space-y-4">
-                    {activeRowResolution.skip ? (
-                      <div className="bg-gray-800/20 border border-gray-800/80 text-gray-400 p-5 rounded-xl text-sm text-center">
-                        🚫 This transaction row will be skipped and will not be imported into the group.
-                      </div>
-                    ) : (
-                      <>
-                        {activeRowDetail.anomalies.map((anomaly, idx) => {
-                          const type = anomaly.anomalyType;
-                          
-                          // Display specific resolution options based on anomalyType
-                          return (
-                            <div
-                              key={idx}
-                              className={`p-4 border rounded-xl space-y-3 ${anomaly.severity === 'ERROR' ? 'bg-red-950/10 border-red-900/50' : anomaly.severity === 'WARNING' ? 'bg-amber-950/10 border-amber-900/50' : 'bg-blue-950/10 border-blue-900/50'}`}
-                            >
-                              <div className="flex items-start gap-2.5">
-                                <span className="text-lg leading-none mt-0.5">
-                                  {anomaly.severity === 'ERROR' ? '🚨' : anomaly.severity === 'WARNING' ? '⚠️' : 'ℹ️'}
-                                </span>
-                                <div>
-                                  <p className="text-white text-xs font-bold uppercase tracking-wider">{type.replace(/_/g, ' ')}</p>
-                                  <p className="text-gray-300 text-sm mt-1">{anomaly.message}</p>
-                                </div>
-                              </div>
-
-                              {/* Interactive input components for resolution */}
-                              {type === 'MISSING_PAYER' && (
-                                <div className="pl-7 space-y-2">
-                                  <label className="block text-xs text-gray-400 font-medium">Select Payer User *</label>
-                                  <select
-                                    value={activeRowResolution.payerId || ''}
-                                    onChange={(e) => updateResolution(activeRowDetail.rowNumber, { payerId: e.target.value })}
-                                    className="w-full max-w-xs px-3 py-2 bg-gray-950 border border-gray-800 text-white rounded-lg focus:border-primary-500 focus:outline-none text-sm"
-                                  >
-                                    <option value="">-- Choose Group Member --</option>
-                                    {members.map(m => (
-                                      <option key={m.id} value={m.id}>{m.name} ({m.email})</option>
-                                    ))}
-                                  </select>
-                                </div>
-                              )}
-
-                              {type === 'INCONSISTENT_NAME' && !anomaly.canAutoFix && (
-                                <div className="pl-7 space-y-2">
-                                  <label className="block text-xs text-gray-400 font-medium">Confirm User Casing / Alias Mapping *</label>
-                                  <select
-                                    value={activeRowResolution.payerId || ''}
-                                    onChange={(e) => updateResolution(activeRowDetail.rowNumber, { payerId: e.target.value })}
-                                    className="w-full max-w-xs px-3 py-2 bg-gray-950 border border-gray-800 text-white rounded-lg focus:border-primary-500 focus:outline-none text-sm"
-                                  >
-                                    <option value="">-- Choose Correct User --</option>
-                                    {members.map(m => (
-                                      <option key={m.id} value={m.id}>{m.name}</option>
-                                    ))}
-                                  </select>
-                                </div>
-                              )}
-
-                              {type === 'INCONSISTENT_NAME' && anomaly.canAutoFix && (
-                                <div className="pl-7 text-xs text-gray-400 bg-gray-950/30 p-2 rounded border border-gray-850">
-                                  ✅ Casing will automatically be normalized from <span className="font-semibold text-white">"{anomaly.originalValue}"</span> to <span className="font-semibold text-white">"{anomaly.suggestedValue}"</span>.
-                                </div>
-                              )}
-
-                              {type === 'DUPLICATE_EXPENSE' && (
-                                <div className="pl-7 flex flex-col gap-2">
-                                  <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-300 font-semibold select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={!!activeRowResolution.skip}
-                                      onChange={(e) => updateResolution(activeRowDetail.rowNumber, { skip: e.target.checked })}
-                                      className="w-4 h-4 rounded bg-gray-800 border-gray-700 text-primary-500 focus:ring-primary-500 focus:ring-offset-gray-900"
-                                    />
-                                    Skip this duplicate row (Recommended)
-                                  </label>
-                                </div>
-                              )}
-
-                              {type === 'SETTLEMENT_AS_EXPENSE' && (
-                                <div className="pl-7 space-y-3">
-                                  <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-300 font-semibold select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={!!activeRowResolution.isSettlement}
-                                      onChange={(e) => updateResolution(activeRowDetail.rowNumber, { isSettlement: e.target.checked })}
-                                      className="w-4 h-4 rounded bg-gray-800 border-gray-700 text-primary-500"
-                                    />
-                                    Convert to Settlement Record
-                                  </label>
-                                  {activeRowResolution.isSettlement && (
-                                    <div className="space-y-2 max-w-xs">
-                                      <label className="block text-xs text-gray-400 font-medium">Recipient (Payee) *</label>
-                                      <select
-                                        value={activeRowResolution.payeeId || ''}
-                                        onChange={(e) => updateResolution(activeRowDetail.rowNumber, { payeeId: e.target.value })}
-                                        className="w-full px-3 py-2 bg-gray-950 border border-gray-800 text-white rounded-lg text-sm focus:outline-none"
-                                      >
-                                        <option value="">-- Choose Recipient --</option>
-                                        {members.map(m => (
-                                          <option key={m.id} value={m.id}>{m.name}</option>
-                                        ))}
-                                      </select>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-
-                              {type === 'AMBIGUOUS_DATE' && (
-                                <div className="pl-7 space-y-2">
-                                  <label className="block text-xs text-gray-400 font-medium">Select Date Format Interpretation *</label>
-                                  <div className="flex flex-col gap-2">
-                                    <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
-                                      <input
-                                        type="radio"
-                                        name={`date-format-${activeRowDetail.rowNumber}`}
-                                        onChange={() => {
-                                          const match = anomaly.originalValue?.match(/^(\d{2})[/-](\d{2})[/-](\d{4})$/);
-                                          if (match) {
-                                            // interpret first val as Month, second as Day
-                                            const [, m, d, y] = match;
-                                            updateResolution(activeRowDetail.rowNumber, { date: `${y}-${m}-${d}` });
-                                          }
-                                        }}
-                                        className="bg-gray-800 text-primary-500 focus:ring-primary-500 focus:ring-offset-gray-900"
-                                      />
-                                      Interpret as MM-DD-YYYY (Month: {anomaly.originalValue?.split(/[/-]/)[0]}, Day: {anomaly.originalValue?.split(/[/-]/)[1]})
-                                    </label>
-                                    <label className="flex items-center gap-2 text-xs text-gray-300 cursor-pointer">
-                                      <input
-                                        type="radio"
-                                        name={`date-format-${activeRowDetail.rowNumber}`}
-                                        onChange={() => {
-                                          const match = anomaly.originalValue?.match(/^(\d{2})[/-](\d{2})[/-](\d{4})$/);
-                                          if (match) {
-                                            // interpret first val as Day, second as Month
-                                            const [, d, m, y] = match;
-                                            updateResolution(activeRowDetail.rowNumber, { date: `${y}-${m}-${d}` });
-                                          }
-                                        }}
-                                        className="bg-gray-800 text-primary-500 focus:ring-primary-500 focus:ring-offset-gray-900"
-                                      />
-                                      Interpret as DD-MM-YYYY (Month: {anomaly.originalValue?.split(/[/-]/)[1]}, Day: {anomaly.originalValue?.split(/[/-]/)[0]})
-                                    </label>
-                                  </div>
-                                </div>
-                              )}
-
-                              {type === 'CURRENCY_CONVERSION' && (
-                                <div className="pl-7 space-y-3">
-                                  <div className="flex gap-4">
-                                    <div className="w-1/2">
-                                      <label className="block text-xs text-gray-400 font-medium">Exchange Rate ({anomaly.originalValue} to INR) *</label>
-                                      <input
-                                        type="number"
-                                        step="0.01"
-                                        value={activeRowResolution.exchangeRate || 83.00}
-                                        onChange={(e) => updateResolution(activeRowDetail.rowNumber, { exchangeRate: parseFloat(e.target.value) || 0 })}
-                                        className="w-full px-3 py-2 bg-gray-950 border border-gray-800 text-white rounded-lg focus:outline-none focus:border-primary-500 text-sm mt-1"
-                                      />
-                                    </div>
-                                    <div className="w-1/2">
-                                      <label className="block text-xs text-gray-500 font-medium">Converted amount</label>
-                                      <p className="text-white text-base font-bold mt-2.5">
-                                        ₹{(parseFloat(activeRowDetail.rowData.amount) * (activeRowResolution.exchangeRate || 83.00)).toFixed(2)}
-                                      </p>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-
-                              {type === 'INVALID_DATE' && (
-                                <div className="pl-7 space-y-2">
-                                  <label className="block text-xs text-gray-400 font-medium">Correct Date format (YYYY-MM-DD) *</label>
-                                  <input
-                                    type="date"
-                                    value={activeRowResolution.date || ''}
-                                    onChange={(e) => updateResolution(activeRowDetail.rowNumber, { date: e.target.value })}
-                                    className="w-full max-w-xs px-3 py-2 bg-gray-950 border border-gray-800 text-white rounded-lg focus:outline-none focus:border-primary-500 text-sm"
-                                  />
-                                </div>
-                              )}
-
-                              {type === 'NEGATIVE_AMOUNT' && (
-                                <div className="pl-7 text-xs text-gray-400 bg-gray-950/30 p-2 rounded border border-gray-850">
-                                  ℹ️ This represents a refund. It will split negative amounts among active timeline group members, credited to the payer.
-                                </div>
-                              )}
-
-                              {type === 'SPLIT_INCONSISTENCY' && (
-                                <div className="pl-7 text-xs text-gray-400 bg-gray-950/30 p-2 rounded border border-gray-850">
-                                  ✅ Inconsistent split details were ignored. Casing/Split type will default to <span className="font-semibold text-white">EQUAL</span> splits.
-                                </div>
-                              )}
-
-                              {type === 'INVALID_MEMBER_FOR_DATE' && (
-                                <div className="pl-7 text-xs text-gray-400 bg-gray-950/30 p-2 rounded border border-gray-850">
-                                  ✅ Non-active timeline participants were automatically excluded. Split will be shared only among valid members.
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-
-                        {activeRowDetail.anomalies.length === 0 && (
-                          <div className="bg-green-950/10 border border-green-900/50 p-5 rounded-xl flex items-center gap-3 text-sm text-green-400">
-                            <span>✅</span>
-                            This transaction row is clean! Ready to import directly.
-                          </div>
-                        )}
-                      </>
                     )}
                   </div>
                 </div>
-              ) : (
-                <div className="flex-1 flex justify-center items-center text-gray-500 text-sm">
-                  Select a row from the list to review and resolve anomalies.
-                </div>
-              )}
-
-              {/* Bottom confirmation action */}
-              <div className="mt-8 pt-4 border-t border-gray-800 flex justify-between items-center">
-                <p className="text-xs text-gray-500">
-                  {getBlockersCount() > 0 ? (
-                    <span className="text-red-400 font-semibold">⚠️ {getBlockersCount()} blocking issues must be resolved</span>
-                  ) : (
-                    <span className="text-green-400 font-semibold">✓ All rows resolved! Ready to import</span>
-                  )}
-                </p>
-                <div className="flex gap-3">
-                  <Button type="button" onClick={() => setStep(1)} variant="secondary">
-                    Back to Upload
-                  </Button>
-                  <Button
-                    type="button"
-                    onClick={handleConfirmImport}
-                    disabled={getBlockersCount() > 0 || isProcessing}
-                    variant="primary"
-                  >
-                    {isProcessing ? 'Finalizing Import...' : 'Import Expenses & Settlements'}
-                  </Button>
-                </div>
-              </div>
+              ))}
             </div>
+
+            {detail.anomalies
+              .filter((a) => !a.canAutoFix)
+              .map((a, i) => (
+                <div key={i} className="mt-1">
+                  {renderResolutionControl(a)}
+                </div>
+              ))}
+
+            {renderSplitAdjustment(detail.rowNumber, detail.rowData)}
+          </div>
+        ))}
+
+        <div className="flex justify-end gap-2 pt-2 sticky bottom-0 bg-gray-900 py-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-2 text-sm bg-gray-800 text-gray-200 rounded hover:bg-gray-700"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={hasUnresolvedErrors}
+            className="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {hasUnresolvedErrors ? 'Resolve errors to continue' : 'Confirm Import'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderResult = () => {
+    if (!report) {
+      return (
+        <div className="space-y-4">
+          <div className="p-4 rounded-lg bg-red-900/30 text-red-400 border border-red-800">
+            {resultMessage || 'Import failed'}
+          </div>
+          <div className="flex justify-end">
+            <button
+              onClick={handleClose}
+              className="px-4 py-2 text-sm bg-gray-800 text-gray-200 rounded hover:bg-gray-700"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    const { status, successfulRows, failedRows, processedRows } = report;
+    const isSuccess = status === 'COMPLETED';
+
+    return (
+      <div className="space-y-4">
+        <div
+          className={`p-4 rounded-lg border ${
+            isSuccess
+              ? 'bg-green-900/30 text-green-400 border-green-800'
+              : 'bg-red-900/30 text-red-400 border-red-800'
+          }`}
+        >
+          <p className="font-semibold text-lg">
+            {isSuccess ? 'Import Completed' : 'Import Failed'}
+          </p>
+          <p className="text-sm mt-1">{resultMessage || report.summary}</p>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-gray-800 rounded p-3 text-center">
+            <p className="text-xl font-bold text-white">{processedRows}</p>
+            <p className="text-xs text-gray-400">Processed</p>
+          </div>
+          <div className="bg-gray-800 rounded p-3 text-center">
+            <p className="text-xl font-bold text-green-400">{successfulRows}</p>
+            <p className="text-xs text-gray-400">Successful</p>
+          </div>
+          <div className="bg-gray-800 rounded p-3 text-center">
+            <p className="text-xl font-bold text-red-400">{failedRows}</p>
+            <p className="text-xs text-gray-400">Failed</p>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={handleClose}
+            className="px-4 py-2 text-sm bg-gray-800 text-gray-200 rounded hover:bg-gray-700"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+      <div className="bg-gray-900 p-5 rounded-lg w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="flex justify-between items-center mb-3">
+          <div>
+            <h3 className="text-white text-lg font-semibold">Import Expenses</h3>
+            <p className="text-gray-500 text-xs">
+              {step === 'upload' && 'Select a CSV file to import'}
+              {step === 'review' && 'Review detected anomalies before importing'}
+              {step === 'confirming' && 'Confirming import...'}
+              {step === 'result' && 'Import result'}
+            </p>
+          </div>
+          {step !== 'confirming' && (
+            <button
+              onClick={onClose}
+              className="text-gray-500 hover:text-gray-300 text-xl leading-none"
+            >
+              ×
+            </button>
+          )}
+        </div>
+
+        {error && (
+          <div className="mb-3 p-2 rounded text-sm bg-red-900/30 text-red-400 border border-red-800">
+            {error}
           </div>
         )}
 
-        {/* Step 3: Success */}
-        {step === 3 && (
-          <div className="flex-1 flex flex-col justify-center items-center p-8 space-y-5 text-center">
-            <div className="w-16 h-16 bg-primary-500/20 border border-primary-500 rounded-full flex items-center justify-center text-3xl animate-bounce">
-              🎉
-            </div>
-            <div>
-              <h4 className="text-white text-xl font-semibold tracking-wide">Import Successful!</h4>
-              <p className="text-gray-400 text-sm mt-2">
-                All resolved transactions have been successfully written to the group expenses and settlements.
-              </p>
-            </div>
-            <p className="text-gray-500 text-xs animate-pulse">This window will close automatically...</p>
+        {step === 'upload' && renderUpload()}
+        {step === 'review' && renderReview()}
+        {step === 'confirming' && (
+          <div className="flex justify-center items-center py-12">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500" />
+            <span className="text-gray-400 ml-3">Importing expenses...</span>
           </div>
         )}
+        {step === 'result' && renderResult()}
       </div>
     </div>
   );

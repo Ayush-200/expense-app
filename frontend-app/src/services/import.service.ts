@@ -8,16 +8,33 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+export type AnomalySeverity = 'ERROR' | 'WARNING' | 'INFO';
+
+export type AnomalyType =
+  | 'DUPLICATE_EXPENSE'
+  | 'INCONSISTENT_NAME'
+  | 'MISSING_PAYER'
+  | 'SETTLEMENT_AS_EXPENSE'
+  | 'MISSING_CURRENCY'
+  | 'CURRENCY_CONVERSION'
+  | 'NEGATIVE_AMOUNT'
+  | 'INVALID_DATE'
+  | 'AMBIGUOUS_DATE'
+  | 'SPLIT_INCONSISTENCY'
+  | 'INVALID_MEMBER_FOR_DATE'
+  | 'GUEST_PARTICIPANT'
+  | 'PAYER_NOT_MEMBER'
+  | 'PERCENTAGE_MISMATCH';
+
 export interface Anomaly {
-  id?: string;
   rowNumber: number;
-  severity: 'ERROR' | 'WARNING' | 'INFO';
-  anomalyType: string;
+  severity: AnomalySeverity;
+  anomalyType: AnomalyType;
   field?: string;
   message: string;
   originalValue?: string;
   suggestedValue?: string;
-  resolution?: string;
+  canAutoFix: boolean;
 }
 
 export interface CSVRow {
@@ -29,7 +46,13 @@ export interface CSVRow {
   splitType?: string;
   participants?: string;
   participantShares?: string;
-  type?: string;
+  [key: string]: any;
+}
+
+export interface DetailRow {
+  rowNumber: number;
+  anomalies: Anomaly[];
+  rowData: CSVRow;
 }
 
 export interface ImportReport {
@@ -46,14 +69,10 @@ export interface ImportReport {
     byType: Record<string, number>;
   };
   summary: string;
-  details: Array<{
-    rowNumber: number;
-    anomalies: Anomaly[];
-    rowData: CSVRow;
-  }>;
+  details: DetailRow[];
 }
 
-export interface GroupMember {
+export interface JobMember {
   id: string;
   name: string;
   email: string;
@@ -61,24 +80,36 @@ export interface GroupMember {
   leftAt: string | null;
 }
 
-export interface ImportJobDetails {
+export interface ImportJobResponse {
   job: {
     id: string;
     groupId: string;
     userId: string;
     fileName: string;
-    status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'REQUIRES_APPROVAL';
+    status: string;
     totalRows: number;
     processedRows: number;
     successfulRows: number;
     failedRows: number;
     rowData: CSVRow[];
-    anomalies: Anomaly[];
+    anomalies: Array<{
+      id: string;
+      importJobId: string;
+      rowNumber: number;
+      severity: string;
+      anomalyType: string;
+      field: string | null;
+      message: string;
+      originalValue: string | null;
+      suggestedValue: string | null;
+      resolution: string | null;
+      rowData: CSVRow;
+    }>;
   };
-  members: GroupMember[];
+  members: JobMember[];
 }
 
-export interface Resolution {
+export type ResolutionMap = Record<number, {
   payerId?: string;
   date?: string;
   currency?: string;
@@ -87,39 +118,39 @@ export interface Resolution {
   payeeId?: string;
   skip?: boolean;
   confirmedDuplicate?: boolean;
-}
+  splitType?: string;
+  participantShares?: string;
+  participants?: string;
+}>;
 
 export const importService = {
-  async importExpenses(groupId: string, file: File): Promise<ImportReport> {
+  async uploadAndValidate(groupId: string, file: File, exchangeRate?: number): Promise<ImportReport> {
     const formData = new FormData();
     formData.append('file', file);
+    if (exchangeRate) {
+      formData.append('exchangeRate', exchangeRate.toString());
+    }
 
     const res = await api.post<ImportReport>(
       `/import/expenses/${groupId}`,
       formData,
-      {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      }
+      { headers: { 'Content-Type': 'multipart/form-data' } }
     );
     return res.data;
   },
 
-  async getImportJob(jobId: string): Promise<ImportJobDetails> {
-    const res = await api.get<ImportJobDetails>(`/import/jobs/${jobId}`);
+  async getImportJob(jobId: string): Promise<ImportJobResponse> {
+    const res = await api.get<ImportJobResponse>(`/import/jobs/${jobId}`);
     return res.data;
   },
 
-  async confirmImport(jobId: string, resolutions: Record<number, Resolution>): Promise<{ message: string }> {
-    const res = await api.post<{ message: string }>(`/import/jobs/${jobId}/confirm`, {
-      resolutions,
-    });
+  async confirmImport(jobId: string, resolutions: ResolutionMap): Promise<{ message: string; job: any }> {
+    const res = await api.post<{ message: string; job: any }>(`/import/jobs/${jobId}/confirm`, { resolutions });
     return res.data;
   },
 
   async downloadTemplate(): Promise<Blob> {
-    const res = await api.get('/import/template', {
-      responseType: 'blob',
-    });
+    const res = await api.get('/import/template', { responseType: 'blob' });
     return res.data;
   },
 };

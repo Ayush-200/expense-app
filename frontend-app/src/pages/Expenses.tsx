@@ -10,6 +10,7 @@ import { Button } from '../components/Button';
 import { ExpenseForm } from '../components/ExpenseForm';
 import { ImportExpensesModal } from '../components/ImportExpensesModal';
 import { CreateExpenseData } from '../types';
+import { formatDate } from '../utils/date';
 
 const SPLIT_LABELS: Record<string, string> = {
   EQUAL: 'Equal',
@@ -31,6 +32,7 @@ export function Expenses() {
   const [showImport, setShowImport] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!groupId) return;
@@ -98,6 +100,7 @@ export function Expenses() {
       {showImport && (
         <ImportExpensesModal
           groupId={groupId}
+          groupMembers={members}
           onClose={() => setShowImport(false)}
           onSuccess={() => {
             setShowImport(false);
@@ -121,6 +124,9 @@ export function Expenses() {
             >
               📥 Import CSV
             </button>
+            <Link to={`/events?groupId=${groupId}`}>
+              <Button variant="secondary">Event Timeline</Button>
+            </Link>
             <Link to={`/balances?groupId=${groupId}`}>
               <Button variant="secondary">Balances</Button>
             </Link>
@@ -158,37 +164,114 @@ export function Expenses() {
           </Card>
         ) : (
           <div className="space-y-3">
-            {expenses.map((expense) => (
-              <Card key={expense.id} className="flex items-center justify-between gap-4">
-                <div
-                  className="flex-1 cursor-pointer"
-                  onClick={() => navigate(`/expenses/${expense.id}?groupId=${groupId}`)}
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs px-2 py-0.5 bg-gray-800 text-gray-400 rounded border border-gray-700">
-                      {SPLIT_LABELS[expense.splitType]}
-                    </span>
-                    <p className="text-white font-medium">{expense.description}</p>
-                  </div>
-                  <p className="text-gray-400 text-sm mt-1">
-                    Paid by {expense.paidBy.name} · {new Date(expense.date).toLocaleDateString()}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-white font-semibold text-lg">₹{Number(expense.totalAmount).toFixed(2)}</p>
-                  <p className="text-gray-500 text-xs">{expense.participants.length} participants</p>
-                </div>
-                {expense.paidById === user?.id && (
-                  <button
-                    onClick={() => handleDelete(expense.id)}
-                    className="text-red-500 hover:text-red-400 text-lg leading-none ml-2"
-                    title="Delete expense"
+            {expenses.map((expense) => {
+              const isExpanded = expandedId === expense.id;
+              const totalAmount = Number(expense.totalAmount);
+              const parts = expense.participants;
+              const totalShares = expense.splitType === 'SHARE'
+                ? parts.reduce((s, p) => s + Number(p.splitMetadata?.shares || 1), 0)
+                : 0;
+
+              return (
+              <Card key={expense.id}>
+                <div className="flex items-center justify-between gap-4">
+                  <div
+                    className="flex-1 cursor-pointer"
+                    onClick={() => navigate(`/expenses/${expense.id}?groupId=${groupId}`)}
                   >
-                    ×
-                  </button>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs px-2 py-0.5 bg-gray-800 text-gray-400 rounded border border-gray-700">
+                        {SPLIT_LABELS[expense.splitType]}
+                      </span>
+                      <p className="text-white font-medium">{expense.description}</p>
+                    </div>
+                    <p className="text-gray-400 text-sm mt-1">
+                      Paid by {expense.paidBy.name} · {formatDate(expense.date)}
+                    </p>
+                  </div>
+                  <div className="text-right flex items-center gap-3">
+                    <div>
+                      <p className="text-white font-semibold text-lg">₹{totalAmount.toFixed(2)}</p>
+                      <p className="text-gray-500 text-xs">{parts.length} participants</p>
+                    </div>
+                    {expense.paidById === user?.id && (
+                      <button
+                        onClick={() => handleDelete(expense.id)}
+                        className="text-red-500 hover:text-red-400 text-lg leading-none"
+                        title="Delete expense"
+                      >
+                        ×
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setExpandedId(isExpanded ? null : expense.id)}
+                      className="text-gray-500 hover:text-gray-300 text-sm"
+                      title="Show calculation"
+                    >
+                      {isExpanded ? '▲' : '▼'}
+                    </button>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="mt-3 pt-3 border-t border-gray-700">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-gray-500 border-b border-gray-700">
+                          <th className="text-left py-1 pr-2">Participant</th>
+                          <th className="text-right py-1 px-2">
+                            {expense.splitType === 'PERCENTAGE' ? '%' :
+                             expense.splitType === 'SHARE' ? 'Shares' : ''}
+                          </th>
+                          <th className="text-right py-1 px-2">Calculation</th>
+                          <th className="text-right py-1 pl-2">Amount Owed</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {parts.map((p) => {
+                          const name = p.user?.name ?? p.guestName ?? 'Guest';
+                          const amountOwed = Number(p.amountOwed);
+                          let calcText = '';
+                          let pctOrShares = '';
+
+                          if (expense.splitType === 'EQUAL') {
+                            calcText = `${totalAmount.toFixed(0)} ÷ ${parts.length}`;
+                          } else if (expense.splitType === 'EXACT') {
+                            calcText = 'Exact amount';
+                          } else if (expense.splitType === 'PERCENTAGE') {
+                            const pct = p.splitMetadata?.percentage ?? 0;
+                            pctOrShares = `${pct}%`;
+                            calcText = `${totalAmount.toFixed(0)} × ${pct}%`;
+                          } else if (expense.splitType === 'SHARE') {
+                            const shares = p.splitMetadata?.shares ?? 1;
+                            pctOrShares = `${shares}`;
+                            calcText = `${totalAmount.toFixed(0)} × ${shares}/${totalShares}`;
+                          }
+
+                          return (
+                            <tr key={p.id} className="border-b border-gray-800/50">
+                              <td className="py-1 pr-2 text-white">{name}</td>
+                              <td className="text-right py-1 px-2 text-gray-400">{pctOrShares}</td>
+                              <td className="text-right py-1 px-2 text-gray-500 font-mono">{calcText}</td>
+                              <td className="text-right py-1 pl-2 text-white font-medium">₹{amountOwed.toFixed(2)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr className="text-gray-400 font-medium">
+                          <td className="py-1 pr-2">Total</td>
+                          <td className="text-right py-1 px-2"></td>
+                          <td className="text-right py-1 px-2"></td>
+                          <td className="text-right py-1 pl-2">₹{parts.reduce((s, p) => s + Number(p.amountOwed), 0).toFixed(2)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
                 )}
               </Card>
-            ))}
+            );
+            })}
           </div>
         )}
       </div>

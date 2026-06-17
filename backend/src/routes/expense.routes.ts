@@ -3,6 +3,7 @@ import {
   createExpense,
   getExpenses,
   getExpense,
+  getExpenseParticipants,
   updateExpense,
   deleteExpense,
 } from '../controllers/expense.controller';
@@ -15,6 +16,7 @@ router.use(authenticate);
 router.post('/', createExpense);
 router.get('/', getExpenses);         // ?groupId=...
 router.get('/:id', getExpense);
+router.get('/:id/participants', getExpenseParticipants);
 router.put('/:id', updateExpense);
 router.delete('/:id', deleteExpense);
 

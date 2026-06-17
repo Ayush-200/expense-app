@@ -11,6 +11,7 @@ const expenseInclude = {
     include: {
       user: { select: { id: true, name: true, email: true } },
     },
+    orderBy: { id: 'asc' as const },
   },
   group: { select: { id: true, name: true } },
 };
@@ -49,7 +50,7 @@ export const createExpense = async (req: AuthRequest, res: Response) => {
             guestName: p.guestName ?? null,
             guestEmail: p.guestEmail ?? null,
             amountOwed: p.amountOwed,
-            splitMetadata: p.splitMetadata,
+            splitMetadata: p.splitMetadata as any,
           })),
         },
       },
@@ -149,7 +150,7 @@ export const updateExpense = async (req: AuthRequest, res: Response) => {
           guestName: p.guestName ?? null,
           guestEmail: p.guestEmail ?? null,
           amountOwed: p.amountOwed,
-          splitMetadata: p.splitMetadata,
+          splitMetadata: p.splitMetadata as any,
         })),
       };
     }
@@ -167,6 +168,40 @@ export const updateExpense = async (req: AuthRequest, res: Response) => {
     });
 
     res.json({ message: 'Expense updated', expense });
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const getExpenseParticipants = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user!.id;
+
+    const expense = await prisma.expense.findUnique({
+      where: { id },
+      select: { id: true, groupId: true },
+    });
+    if (!expense) {
+      return res.status(404).json({ message: 'Expense not found' });
+    }
+
+    const membership = await prisma.groupMember.findFirst({
+      where: { groupId: expense.groupId, userId, leftAt: null },
+    });
+    if (!membership) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    const participants = await prisma.expenseParticipant.findMany({
+      where: { expenseId: id },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { id: 'asc' as const },
+    });
+
+    res.json({ participants });
   } catch (error) {
     throw error;
   }

@@ -1,6 +1,6 @@
 import { Response } from 'express';
 import { prisma } from '../config/database';
-import { createGroupSchema, addMemberSchema } from '../validations/group.validation';
+import { createGroupSchema, addMemberSchema, addMembersSchema } from '../validations/group.validation';
 import { AuthRequest } from '../types';
 
 export const createGroup = async (req: AuthRequest, res: Response) => {
@@ -376,6 +376,54 @@ export const getMembershipHistory = async (req: AuthRequest, res: Response) => {
     });
 
     res.json({ history });
+  } catch (error) {
+    throw error;
+  }
+};
+
+export const addMembers = async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const validatedData = addMembersSchema.parse(req.body);
+    const requestUserId = req.user!.id;
+
+    const group = await prisma.group.findFirst({
+      where: {
+        id,
+        members: { some: { userId: requestUserId, leftAt: null } },
+      },
+    });
+    if (!group) {
+      return res.status(404).json({ message: 'Group not found or access denied' });
+    }
+
+    const existingMemberIds = (
+      await prisma.groupMember.findMany({
+        where: { groupId: id, userId: { in: validatedData.userIds }, leftAt: null },
+        select: { userId: true },
+      })
+    ).map((m) => m.userId);
+
+    const newUserIds = validatedData.userIds.filter((uid) => !existingMemberIds.includes(uid));
+
+    if (newUserIds.length === 0) {
+      return res.status(400).json({ message: 'All selected users are already members' });
+    }
+
+    const memberships = await prisma.$transaction(
+      newUserIds.map((userId) =>
+        prisma.groupMember.create({
+          data: { groupId: id, userId, joinedAt: new Date() },
+          include: { user: { select: { id: true, name: true, email: true } } },
+        })
+      )
+    );
+
+    const skipped = validatedData.userIds.length - newUserIds.length;
+    let msg = `${memberships.length} member(s) added successfully`;
+    if (skipped > 0) msg += ` (${skipped} already member(s))`;
+
+    res.status(201).json({ message: msg, memberships, skipped });
   } catch (error) {
     throw error;
   }

@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { API_URL } from '../config/api';
-import { Expense, CreateExpenseData } from '../types';
+import { Expense, ExpenseParticipant, CreateExpenseData } from '../types';
 
 const api = axios.create({ baseURL: API_URL });
 
@@ -25,6 +25,11 @@ export const expenseService = {
 
   async getExpense(id: string): Promise<{ expense: Expense }> {
     const res = await api.get<{ expense: Expense }>(`/expenses/${id}`);
+    return res.data;
+  },
+
+  async getExpenseParticipants(id: string): Promise<{ participants: ExpenseParticipant[] }> {
+    const res = await api.get<{ participants: ExpenseParticipant[] }>(`/expenses/${id}/participants`);
     return res.data;
   },
 

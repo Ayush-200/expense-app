@@ -1,0 +1,15 @@
+date,description,paidBy,amount,currency,splitType,participants
+2024-01-15,Team lunch,Alice,1200.50,INR,EQUAL,"Alice,Bob,Carol"
+2024-01-16,Office supplies,bob,450.00,INR,EQUAL,"Alice,Bob"
+2024-01-16,Office supplies,Bob,450.00,INR,EQUAL,"Alice,Bob"
+01/02/2024,Coffee meeting,Alice,180.00,,EQUAL,"Alice,Bob"
+2024-01-18,Dinner,Bob,-350.50,INR,EQUAL,"Alice,Bob,Carol"
+2024-01-19,Settlement to Alice,Carol,500.00,INR,EQUAL,Alice
+2024-01-20,Books,Alice,0.00,INR,EQUAL,"Alice,Bob"
+2024-01-21,Taxi,Dave,250.00,INR,EQUAL,"Alice,Dave"
+2024-01-22,Lunch,Alice,600.567,INR,EQUAL,"Alice,Bob,Eve"
+2024-01-23,Snacks,,120.00,INR,EQUAL,"Alice,Bob"
+2024-01-24,Groceries,Bob,890.00,USD,PERCENTAGE,"Alice,Bob"
+2024-01-25,Team event,Alice,1200.50,INR,EQUAL,"Alice,Bob,Carol"
+invalid-date,Movie tickets,Bob,450.00,INR,EQUAL,"Alice,Bob"
+2024-01-27,Breakfast,Bob,200.00,INR,CUSTOM,"Alice,Bob"

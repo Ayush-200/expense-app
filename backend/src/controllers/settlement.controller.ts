@@ -11,6 +11,7 @@ const expenseIncludeForCalculation = {
   paidBy: { select: { id: true, name: true } },
   participants: {
     include: { user: { select: { id: true, name: true } } },
+    orderBy: { id: 'asc' as const },
   },
 } as const;
 
@@ -19,23 +20,46 @@ const settlementIncludeForCalculation = {
   toUser: { select: { id: true, name: true } },
 } as const;
 
-function shapeExpenses(expenses: any[]) {
-  return expenses.map((e) => ({
-    id: e.id,
-    description: e.description,
-    date: e.date instanceof Date ? e.date.toISOString() : String(e.date),
-    splitType: e.splitType,
-    paidById: e.paidById,
-    paidByName: e.paidBy.name,
-    totalAmount: Number(e.totalAmount),
-    participants: e.participants.map((p: any) => ({
-      userId: p.userId ?? undefined,
-      guestName: p.guestName ?? undefined,
-      guestEmail: p.guestEmail ?? undefined,
-      userName: p.user?.name,
-      amountOwed: Number(p.amountOwed),
-    })),
-  }));
+interface MembershipPeriod {
+  userId: string;
+  joinedAt: Date;
+  leftAt: Date | null;
+}
+
+function wasMemberAt(memberships: MembershipPeriod[], userId: string, date: Date): boolean {
+  const member = memberships.find(m => m.userId === userId);
+  if (!member) return false;
+  if (date < member.joinedAt) return false;
+  if (member.leftAt && date > member.leftAt) return false;
+  return true;
+}
+
+function shapeExpenses(expenses: any[], memberships: MembershipPeriod[]) {
+  return expenses.map((e) => {
+    const expenseDate = e.date instanceof Date ? e.date : new Date(e.date);
+    return {
+      id: e.id,
+      description: e.description,
+      date: expenseDate.toISOString(),
+      splitType: e.splitType,
+      paidById: e.paidById,
+      paidByName: e.paidBy.name,
+      totalAmount: Number(e.totalAmount),
+      participants: e.participants
+        .filter((p: any) => {
+          // Guests are always included (they don't have membership)
+          if (!p.userId) return true;
+          return wasMemberAt(memberships, p.userId, expenseDate);
+        })
+        .map((p: any) => ({
+          userId: p.userId ?? undefined,
+          guestName: p.guestName ?? undefined,
+          guestEmail: p.guestEmail ?? undefined,
+          userName: p.user?.name,
+          amountOwed: Number(p.amountOwed),
+        })),
+    };
+  });
 }
 
 function shapeSettlements(settlements: any[]): SettlementForCalculation[] {
@@ -47,6 +71,7 @@ function shapeSettlements(settlements: any[]): SettlementForCalculation[] {
     toUserId: s.toUserId,
     toUserName: s.toUser.name,
     amount: Number(s.amount),
+    currency: s.currency || 'INR',
     note: s.note ?? undefined,
   }));
 }
@@ -68,7 +93,7 @@ export const getGroupBalances = async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    const [expenses, settlementsRecords] = await Promise.all([
+    const [expenses, settlementsRecords, allMembers] = await Promise.all([
       prisma.expense.findMany({
         where: { groupId: id },
         include: expenseIncludeForCalculation,
@@ -79,13 +104,23 @@ export const getGroupBalances = async (req: AuthRequest, res: Response) => {
         include: settlementIncludeForCalculation,
         orderBy: { date: 'asc' },
       }),
+      prisma.groupMember.findMany({
+        where: { groupId: id },
+        select: { userId: true, joinedAt: true, leftAt: true },
+      }),
     ]);
+
+    const memberships: MembershipPeriod[] = allMembers.map(m => ({
+      userId: m.userId,
+      joinedAt: m.joinedAt,
+      leftAt: m.leftAt,
+    }));
 
     if (expenses.length === 0 && settlementsRecords.length === 0) {
       return res.json({ balances: [], settlements: [], totalExpenses: 0 });
     }
 
-    const shapedExpenses = shapeExpenses(expenses);
+    const shapedExpenses = shapeExpenses(expenses, memberships);
     const shapedSettlements = shapeSettlements(settlementsRecords);
     const balancesMap = calculateBalances(shapedExpenses, shapedSettlements);
     const settlements = calculateSettlements(balancesMap);
@@ -127,7 +162,7 @@ export const getMyBalances = async (req: AuthRequest, res: Response) => {
     }> = [];
 
     for (const m of memberships) {
-      const [expenses, settlementsRecords] = await Promise.all([
+      const [expenses, settlementsRecords, groupMembers] = await Promise.all([
         prisma.expense.findMany({
           where: { groupId: m.groupId },
           include: expenseIncludeForCalculation,
@@ -138,11 +173,20 @@ export const getMyBalances = async (req: AuthRequest, res: Response) => {
           include: settlementIncludeForCalculation,
           orderBy: { date: 'asc' },
         }),
+        prisma.groupMember.findMany({
+          where: { groupId: m.groupId },
+          select: { userId: true, joinedAt: true, leftAt: true },
+        }),
       ]);
 
       if (expenses.length === 0 && settlementsRecords.length === 0) continue;
 
-      const shapedExpenses = shapeExpenses(expenses);
+      const groupMemberships: MembershipPeriod[] = groupMembers.map(gm => ({
+        userId: gm.userId,
+        joinedAt: gm.joinedAt,
+        leftAt: gm.leftAt,
+      }));
+      const shapedExpenses = shapeExpenses(expenses, groupMemberships);
       const shapedSettlements = shapeSettlements(settlementsRecords);
       const balancesMap = calculateBalances(shapedExpenses, shapedSettlements);
       const userEntry = balancesMap.get(userId);
@@ -181,7 +225,7 @@ export const getMyBalances = async (req: AuthRequest, res: Response) => {
 export const createSettlement = async (req: AuthRequest, res: Response) => {
   try {
     const { id: groupId } = req.params;
-    const { toUserId, amount, note } = req.body;
+    const { toUserId, amount, currency, note } = req.body;
     const fromUserId = req.user!.id;
 
     if (!toUserId || !amount || amount <= 0) {
@@ -219,6 +263,7 @@ export const createSettlement = async (req: AuthRequest, res: Response) => {
         fromUserId,
         toUserId,
         amount,
+        currency: (currency || 'INR').toUpperCase(),
         note: note ?? null,
       },
       include: settlementIncludeForCalculation,
